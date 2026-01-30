@@ -950,7 +950,7 @@ const handleInviteSubmit = async () => {
                 <Input
                   v-model="formData.email"
                   type="email"
-                  placeholder="name@example.com (可选，输入 Token 后可自动补全)"
+                  placeholder="name@example.com"
                   class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all"
                 />
               </div>
@@ -1006,7 +1006,7 @@ const handleInviteSubmit = async () => {
 		                    <Input
                           v-else
 		                      v-model="formData.chatgptAccountId"
-		                      placeholder="可选，输入 Token 后可自动补全"
+		                      placeholder="如果不使用补全，请手动输入"
 		                      class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
 		                    />
 		                 </div>

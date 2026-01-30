@@ -73,7 +73,7 @@ app.use(
       return callback(null, corsOrigins.has(origin))
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Linuxdo-Token'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Linuxdo-Token', 'Cache-Control', 'Pragma'],
     credentials: false,
     maxAge: 86400
   })
