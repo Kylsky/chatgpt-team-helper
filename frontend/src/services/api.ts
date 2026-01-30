@@ -1299,7 +1299,23 @@ export interface GptAccountsListResponse {
   }
 }
 
+export interface CompleteGptAccountInfoResponse {
+  email: string | null
+  accounts: {
+    accountId: string
+    name: string | null
+    planType: string | null
+    expiresAt: string | null
+    hasActiveSubscription: boolean
+  }[]
+}
+
 export const gptAccountService = {
+  async completeInfo(token: string): Promise<CompleteGptAccountInfoResponse> {
+    const response = await api.post('/gpt-accounts/complete-info', { token })
+    return response.data
+  },
+
   async getAll(params?: GptAccountsListParams): Promise<GptAccountsListResponse> {
     const response = await api.get('/gpt-accounts', { params })
     return response.data
@@ -1312,6 +1328,11 @@ export const gptAccountService = {
 
   async create(data: CreateGptAccountDto): Promise<GptAccount> {
     const response = await api.post('/gpt-accounts', data)
+    return response.data
+  },
+
+  async batchCreate(accounts: Partial<CreateGptAccountDto>[]): Promise<{ results: any[] }> {
+    const response = await api.post('/gpt-accounts/batch', { accounts })
     return response.data
   },
 
@@ -1447,15 +1468,15 @@ export const openAccountsService = {
   ): Promise<
     | { message: string; currentOpenAccountId: number; account?: { id: number; userCount?: number; inviteCount?: number } }
     | {
-        requiresCredit: true
-        message: string
-        creditOrder: {
-          orderNo: string
-          amount: string
-          payUrl?: string | null
-          payRequest?: { method?: 'POST' | 'GET'; url: string; fields?: Record<string, string> }
-        }
+      requiresCredit: true
+      message: string
+      creditOrder: {
+        orderNo: string
+        amount: string
+        payUrl?: string | null
+        payRequest?: { method?: 'POST' | 'GET'; url: string; fields?: Record<string, string> }
       }
+    }
   > {
     const response = await api.post(
       `/open-accounts/${accountId}/board`,

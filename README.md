@@ -307,15 +307,14 @@ LINUXDO_USER_INFO_URL=https://connect.linuxdo.org/api/user
 
 #### Linux DO Credit 支付（开放账号上车）
 
-```env
 LINUXDO_CREDIT_BASE_URL=https://credit.linux.do/epay
 LINUXDO_CREDIT_PID=your-pid
 LINUXDO_CREDIT_KEY=your-key
+notify_url=https://yourdomain.com/credit/notify
 
 # 上车消耗积分
 OPEN_ACCOUNTS_CREDIT_COST=30
 CREDIT_ORDER_EXPIRE_MINUTES=15
-```
 
 ### Telegram 机器人
 

@@ -91,6 +91,13 @@ const inviteEmail = ref('')
 const inviting = ref(false)
 const togglingOpenAccountId = ref<number | null>(null)
 const banningAccountId = ref<number | null>(null)
+const autoCompleting = ref(false)
+const foundAccounts = ref<any[]>([])
+const showSuggestions = ref(false)
+const showAccountSelectDialog = ref(false)
+const showBatchImportDialog = ref(false)
+const batchImportData = ref('')
+const isImporting = ref(false)
 
 // Tab 和 邀请列表状态
 const activeTab = ref<'members' | 'invites'>('members')
@@ -229,6 +236,69 @@ const closeDialog = () => {
   showDialog.value = false
   editingAccount.value = null
   formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isDemoted: false, isBanned: false, chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
+  autoCompleting.value = false
+}
+
+const handleAutoComplete = async () => {
+  if (!formData.value.token?.trim()) {
+    showErrorToast('请先输入 Access Token')
+    return
+  }
+
+  autoCompleting.value = true
+  try {
+    const result = await gptAccountService.completeInfo(formData.value.token.trim())
+    
+    // Set email if it's currently empty
+    if (result.email && !formData.value.email) {
+      formData.value.email = result.email
+    }
+    
+    // Collect accounts and decide showing selection or directly applying
+    if (result.accounts && result.accounts.length > 0) {
+      foundAccounts.value = result.accounts
+      if (result.accounts.length === 1) {
+        applyAccountSelection(result.accounts[0])
+        showSuccessToast('已成功补全账号信息')
+      } else {
+        showSuggestions.value = true
+        showSuccessToast(`检测到 ${result.accounts.length} 个 Team 账号，请点击输入框选择`)
+      }
+    } else {
+      showErrorToast('未找到 Team 类型的账号')
+    }
+  } catch (err: any) {
+    const message = err.response?.data?.error || '自动补全失败，请手动填写'
+    showErrorToast(message)
+  } finally {
+    autoCompleting.value = false
+  }
+}
+
+const applyAccountSelection = (account: any) => {
+  formData.value.chatgptAccountId = account.accountId
+  formData.value.isDemoted = account.isDemoted === true
+  if (account.expiresAt) {
+    formData.value.expireAt = toDatetimeLocal(account.expiresAt)
+  }
+  showSuggestions.value = false
+}
+
+const selectAccount = (account: any) => {
+  applyAccountSelection(account)
+}
+
+const handleInputFocus = () => {
+  if (foundAccounts.value.length > 0) {
+    showSuggestions.value = true
+  }
+}
+
+const handleInputBlur = () => {
+  // 延迟关闭，以便点击事件能先触发
+  setTimeout(() => {
+    showSuggestions.value = false
+  }, 200)
 }
 
 const handleSubmit = async () => {
@@ -564,19 +634,88 @@ const handleInviteSubmit = async () => {
     inviting.value = false
   }
 }
+
+const handleBatchImport = async () => {
+  const lines = batchImportData.value.split('\n').filter(l => l.trim())
+  if (lines.length === 0) {
+    showErrorToast('请输入导入数据')
+    return
+  }
+
+  const accessTokenRegex = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
+  const accountIdRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g
+  const refreshTokenRegex = /rt_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g
+
+  const importAccounts: Partial<CreateGptAccountDto>[] = []
+
+  for (const line of lines) {
+    const tokens = line.match(accessTokenRegex)
+    const emails = line.match(emailRegex)
+    const ids = line.match(accountIdRegex)
+    const refreshTokens = line.match(refreshTokenRegex)
+
+    if (tokens || refreshTokens || emails || ids) {
+      importAccounts.push({
+        token: tokens ? tokens[0] : '',
+        email: emails ? emails[0] : '',
+        chatgptAccountId: ids ? ids[0] : '',
+        refreshToken: refreshTokens ? refreshTokens[0] : '',
+        userCount: 1,
+        isBanned: false
+      })
+    }
+  }
+
+  if (importAccounts.length === 0) {
+    showErrorToast('未能解析到任何账号信息，请检查格式')
+    return
+  }
+
+  isImporting.value = true
+  try {
+    const response = await gptAccountService.batchCreate(importAccounts)
+    const successCount = response.results.filter((r: any) => r.success).length
+    const failCount = response.results.length - successCount
+    
+    showSuccessToast(`导入完成: 成功 ${successCount} 个, 失败 ${failCount} 个`)
+    
+    if (failCount > 0) {
+      console.warn('部分账号导入失败:', response.results.filter((r: any) => !r.success))
+    }
+    
+    await loadAccounts()
+    showBatchImportDialog.value = false
+    batchImportData.value = ''
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '批量导入失败')
+  } finally {
+    isImporting.value = false
+  }
+}
 </script>
 
 <template>
   <div class="space-y-8">
     <!-- Header Actions -->
     <Teleport v-if="teleportReady" to="#header-actions">
-      <Button
-        @click="showDialog = true"
-        class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
-      >
-        <Plus class="w-4 h-4 mr-2" />
-        新建账号
-      </Button>
+      <div class="flex items-center gap-3">
+        <Button
+          @click="showBatchImportDialog = true"
+          variant="outline"
+          class="bg-white hover:bg-gray-50 text-gray-700 border-gray-200 rounded-xl px-5 h-10 shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Plus class="w-4 h-4 mr-2" />
+          批量导入
+        </Button>
+        <Button
+          @click="showDialog = true"
+          class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Plus class="w-4 h-4 mr-2" />
+          新建账号
+        </Button>
+      </div>
     </Teleport>
 
     <!-- 筛选控制栏 -->
@@ -881,6 +1020,47 @@ const handleInviteSubmit = async () => {
       </div>
     </div>
 
+    <!-- Batch Import Dialog -->
+    <Dialog v-model:open="showBatchImportDialog">
+      <DialogContent class="sm:max-w-[500px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl">
+        <DialogHeader class="px-8 pt-8 pb-4">
+          <DialogTitle class="text-2xl font-bold text-gray-900">
+            批量导入账号
+          </DialogTitle>
+          <p class="text-sm text-gray-500 mt-1">支持每行一个账号，将自动支持解析 Token、邮箱、ChatGPT ID 和 Refresh Token。</p>
+        </DialogHeader>
+        
+        <div class="px-8 pb-8 space-y-5">
+          <div class="space-y-2">
+            <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">批量数据</Label>
+            <textarea
+              v-model="batchImportData"
+              placeholder="eyJ... | example@mail.com | 00000000-0000-... | rt_..."
+              class="w-full h-48 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm resize-none"
+            ></textarea>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <Button
+              @click="handleBatchImport"
+              class="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99]"
+              :disabled="isImporting"
+            >
+              <RefreshCw v-if="isImporting" class="w-4 h-4 mr-2 animate-spin" />
+              立即导入
+            </Button>
+            <Button
+              @click="showBatchImportDialog = false"
+              variant="ghost"
+              class="w-full h-12 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl font-medium transition-all"
+            >
+              取消
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+
     <!-- Edit Dialog -->
     <Dialog v-model:open="showDialog">
       <DialogContent class="sm:max-w-[500px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl">
@@ -897,7 +1077,6 @@ const handleInviteSubmit = async () => {
                 <Input
                   v-model="formData.email"
                   type="email"
-                  required
                   placeholder="name@example.com"
                   class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all"
                 />
@@ -905,12 +1084,24 @@ const handleInviteSubmit = async () => {
 
    <div class="space-y-2">
                 <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Access Token</Label>
-                <Input
-                  v-model="formData.token"
-                  required
-                  placeholder="sk-proj-..."
-                  class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
-                />
+                <div class="flex gap-2">
+                  <Input
+                    v-model="formData.token"
+                    required
+                    placeholder="sk-proj-..."
+                    class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm flex-1"
+                  />
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    class="h-11 px-3 rounded-xl border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all"
+                    @click="handleAutoComplete"
+                    :disabled="autoCompleting"
+                  >
+                    <RefreshCw v-if="autoCompleting" class="w-4 h-4 animate-spin" />
+                    <span v-else class="text-xs font-medium whitespace-nowrap">自动补全</span>
+                  </Button>
+                </div>
               </div>
 
               <div class="space-y-2">
@@ -925,12 +1116,34 @@ const handleInviteSubmit = async () => {
 		              <div class="grid grid-cols-2 gap-4">
 		                 <div class="space-y-2">
 		                    <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">ChatGPT ID</Label>
-		                    <Input
-		                      v-model="formData.chatgptAccountId"
-		                      required
-		                      placeholder="必填"
-		                      class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
-		                    />
+                        <div class="relative">
+                          <Input
+                            v-model="formData.chatgptAccountId"
+                            placeholder="自动补全或手动输入"
+                            class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
+                            @focus="handleInputFocus"
+                            @blur="handleInputBlur"
+                          />
+                          
+                          <!-- Suggestions Dropdown -->
+                          <div 
+                            v-if="showSuggestions && foundAccounts.length > 0" 
+                            class="absolute z-10 w-full mt-1 bg-white border border-gray-100 rounded-2xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-1"
+                          >
+                            <div class="max-h-48 overflow-y-auto">
+                              <button
+                                v-for="acc in foundAccounts"
+                                :key="acc.accountId"
+                                type="button"
+                                class="w-full px-4 py-3 text-left hover:bg-blue-50 transition-colors flex flex-col gap-0.5"
+                                @click="selectAccount(acc)"
+                              >
+                                <span class="text-sm font-bold text-gray-900">{{ acc.name }}</span>
+                                <span class="text-xs text-gray-400 font-mono">{{ acc.accountId }}</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
 		                 </div>
 		                 <div class="space-y-2">
 		                    <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">设备 ID</Label>
