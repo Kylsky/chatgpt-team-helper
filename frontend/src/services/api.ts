@@ -1299,7 +1299,21 @@ export interface GptAccountsListResponse {
   }
 }
 
+export interface CompleteGptAccountInfoResponse {
+  email: string | null
+  chatgptAccountId: string | null
+  name: string | null
+  planType: string | null
+  expiresAt: string | null
+  hasActiveSubscription: boolean
+}
+
 export const gptAccountService = {
+  async completeInfo(token: string): Promise<CompleteGptAccountInfoResponse> {
+    const response = await api.post('/gpt-accounts/complete-info', { token })
+    return response.data
+  },
+
   async getAll(params?: GptAccountsListParams): Promise<GptAccountsListResponse> {
     const response = await api.get('/gpt-accounts', { params })
     return response.data
@@ -1447,15 +1461,15 @@ export const openAccountsService = {
   ): Promise<
     | { message: string; currentOpenAccountId: number; account?: { id: number; userCount?: number; inviteCount?: number } }
     | {
-        requiresCredit: true
-        message: string
-        creditOrder: {
-          orderNo: string
-          amount: string
-          payUrl?: string | null
-          payRequest?: { method?: 'POST' | 'GET'; url: string; fields?: Record<string, string> }
-        }
+      requiresCredit: true
+      message: string
+      creditOrder: {
+        orderNo: string
+        amount: string
+        payUrl?: string | null
+        payRequest?: { method?: 'POST' | 'GET'; url: string; fields?: Record<string, string> }
       }
+    }
   > {
     const response = await api.post(
       `/open-accounts/${accountId}/board`,

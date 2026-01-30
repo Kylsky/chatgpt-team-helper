@@ -91,6 +91,7 @@ const inviteEmail = ref('')
 const inviting = ref(false)
 const togglingOpenAccountId = ref<number | null>(null)
 const banningAccountId = ref<number | null>(null)
+const autoCompleting = ref(false)
 
 // Tab 和 邀请列表状态
 const activeTab = ref<'members' | 'invites'>('members')
@@ -229,6 +230,38 @@ const closeDialog = () => {
   showDialog.value = false
   editingAccount.value = null
   formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isDemoted: false, isBanned: false, chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
+  autoCompleting.value = false
+}
+
+const handleAutoComplete = async () => {
+  if (!formData.value.token?.trim()) {
+    showErrorToast('请先输入 Access Token')
+    return
+  }
+
+  autoCompleting.value = true
+  try {
+    const result = await gptAccountService.completeInfo(formData.value.token.trim())
+    
+    if (result.email && !formData.value.email) {
+      formData.value.email = result.email
+    }
+    
+    if (result.chatgptAccountId) {
+      formData.value.chatgptAccountId = result.chatgptAccountId
+    }
+    
+    if (result.expiresAt) {
+      formData.value.expireAt = toDatetimeLocal(result.expiresAt)
+    }
+
+    showSuccessToast('已成功通过 Token 补全账号信息')
+  } catch (err: any) {
+    const message = err.response?.data?.error || '自动补全失败，请手动填写'
+    showErrorToast(message)
+  } finally {
+    autoCompleting.value = false
+  }
 }
 
 const handleSubmit = async () => {
@@ -905,12 +938,24 @@ const handleInviteSubmit = async () => {
 
    <div class="space-y-2">
                 <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Access Token</Label>
-                <Input
-                  v-model="formData.token"
-                  required
-                  placeholder="sk-proj-..."
-                  class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
-                />
+                <div class="flex gap-2">
+                  <Input
+                    v-model="formData.token"
+                    required
+                    placeholder="sk-proj-..."
+                    class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm flex-1"
+                  />
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    class="h-11 px-3 rounded-xl border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all"
+                    @click="handleAutoComplete"
+                    :disabled="autoCompleting"
+                  >
+                    <RefreshCw v-if="autoCompleting" class="w-4 h-4 animate-spin" />
+                    <span v-else class="text-xs font-medium whitespace-nowrap">自动补全</span>
+                  </Button>
+                </div>
               </div>
 
               <div class="space-y-2">

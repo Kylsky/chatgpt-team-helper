@@ -149,9 +149,9 @@ const normalizeProxyConfig = (proxy) => {
 
     const auth = proxy.auth && typeof proxy.auth === 'object'
       ? {
-          username: proxy.auth.username ? String(proxy.auth.username) : '',
-          password: proxy.auth.password ? String(proxy.auth.password) : ''
-        }
+        username: proxy.auth.username ? String(proxy.auth.username) : '',
+        password: proxy.auth.password ? String(proxy.auth.password) : ''
+      }
       : undefined
 
     return {
@@ -189,9 +189,9 @@ const buildProxyUrlFromConfig = (proxyConfig) => {
 
   const auth = proxyConfig.auth && typeof proxyConfig.auth === 'object'
     ? {
-        username: proxyConfig.auth.username ? String(proxyConfig.auth.username) : '',
-        password: proxyConfig.auth.password ? String(proxyConfig.auth.password) : ''
-      }
+      username: proxyConfig.auth.username ? String(proxyConfig.auth.username) : '',
+      password: proxyConfig.auth.password ? String(proxyConfig.auth.password) : ''
+    }
     : null
 
   const authPart = auth && auth.username
@@ -807,5 +807,74 @@ export async function inviteAccountUser(accountId, email, options = {}) {
   return {
     message: '邀请已发送',
     invite: data
+  }
+}
+
+/**
+ * Fetch OpenAI account info from /accounts/check API
+ * @param {string} token - OpenAI Access Token
+ * @param {string|object} proxy - Optional proxy config
+ * @returns {Promise<object>} - Account info { accountId, name, planType, expiresAt }
+ */
+export async function fetchOpenAiAccountInfo(token, proxy = null) {
+  const apiUrl = 'https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27'
+  const headers = {
+    accept: '*/*',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    authorization: `Bearer ${token}`,
+    'oai-client-version': 'prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72',
+    'oai-language': 'zh-CN',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
+  }
+
+  const logContext = { url: apiUrl }
+  const { status, text } = await requestChatgptText(
+    apiUrl,
+    { method: 'GET', headers, proxy },
+    logContext
+  )
+
+  if (status < 200 || status >= 300) {
+    if (status === 401) {
+      throw new AccountSyncError('Token 已过期或无效', 401)
+    }
+    throw new AccountSyncError(`OpenAI API 请求失败: ${status}`, status)
+  }
+
+  const data = parseJsonOrThrow(text, { logContext, message: 'OpenAI 接口返回格式异常' })
+
+  // Find the first account that is a team account or has active subscription
+  const accounts = data.accounts || {}
+  const accountIds = Object.keys(accounts)
+
+  if (accountIds.length === 0) {
+    throw new AccountSyncError('未找到关联的 ChatGPT 账号', 404)
+  }
+
+  // Priority: 1. Active Team 2. Any Team 3. Active Plus 4. First one
+  let selectedId = accountIds.find(id => {
+    const acc = accounts[id]
+    return acc.account?.plan_type === 'team' && acc.entitlement?.has_active_subscription
+  })
+
+  if (!selectedId) {
+    selectedId = accountIds.find(id => accounts[id].account?.plan_type === 'team')
+  }
+
+  if (!selectedId) {
+    selectedId = accountIds.find(id => accounts[id].entitlement?.has_active_subscription)
+  }
+
+  if (!selectedId) {
+    selectedId = accountIds[0]
+  }
+
+  const selected = accounts[selectedId]
+  return {
+    accountId: selectedId,
+    name: selected.account?.name || null,
+    planType: selected.account?.plan_type || null,
+    expiresAt: selected.entitlement?.expires_at || null,
+    hasActiveSubscription: !!selected.entitlement?.has_active_subscription
   }
 }
