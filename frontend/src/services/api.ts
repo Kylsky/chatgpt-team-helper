@@ -1331,6 +1331,11 @@ export const gptAccountService = {
     return response.data
   },
 
+  async batchCreate(accounts: Partial<CreateGptAccountDto>[]): Promise<{ results: any[] }> {
+    const response = await api.post('/gpt-accounts/batch', { accounts })
+    return response.data
+  },
+
   async update(id: number, data: CreateGptAccountDto): Promise<GptAccount> {
     const response = await api.put(`/gpt-accounts/${id}`, data)
     return response.data

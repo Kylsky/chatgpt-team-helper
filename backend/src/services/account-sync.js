@@ -859,7 +859,8 @@ export async function fetchOpenAiAccountInfo(token, proxy = null) {
         name: acc.account?.name || 'Unnamed Team',
         planType: acc.account?.plan_type || null,
         expiresAt: acc.entitlement?.expires_at || null,
-        hasActiveSubscription: !!acc.entitlement?.has_active_subscription
+        hasActiveSubscription: !!acc.entitlement?.has_active_subscription,
+        isDemoted: acc.account?.account_user_role === 'account-owner'
       }
     })
     .filter(acc => acc.planType === 'team')

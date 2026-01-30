@@ -94,6 +94,9 @@ const banningAccountId = ref<number | null>(null)
 const autoCompleting = ref(false)
 const foundAccounts = ref<any[]>([])
 const showAccountSelectDialog = ref(false)
+const showBatchImportDialog = ref(false)
+const batchImportData = ref('')
+const isImporting = ref(false)
 
 // Tab 和 邀请列表状态
 const activeTab = ref<'members' | 'invites'>('members')
@@ -272,6 +275,7 @@ const handleAutoComplete = async () => {
 
 const applyAccountSelection = (account: any) => {
   formData.value.chatgptAccountId = account.accountId
+  formData.value.isDemoted = account.isDemoted === true
   if (account.expiresAt) {
     formData.value.expireAt = toDatetimeLocal(account.expiresAt)
   }
@@ -617,19 +621,88 @@ const handleInviteSubmit = async () => {
     inviting.value = false
   }
 }
+
+const handleBatchImport = async () => {
+  const lines = batchImportData.value.split('\n').filter(l => l.trim())
+  if (lines.length === 0) {
+    showErrorToast('请输入导入数据')
+    return
+  }
+
+  const accessTokenRegex = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
+  const accountIdRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g
+  const refreshTokenRegex = /rt_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g
+
+  const importAccounts: Partial<CreateGptAccountDto>[] = []
+
+  for (const line of lines) {
+    const tokens = line.match(accessTokenRegex)
+    const emails = line.match(emailRegex)
+    const ids = line.match(accountIdRegex)
+    const refreshTokens = line.match(refreshTokenRegex)
+
+    if (tokens || refreshTokens || emails || ids) {
+      importAccounts.push({
+        token: tokens ? tokens[0] : '',
+        email: emails ? emails[0] : '',
+        chatgptAccountId: ids ? ids[0] : '',
+        refreshToken: refreshTokens ? refreshTokens[0] : '',
+        userCount: 1,
+        isBanned: false
+      })
+    }
+  }
+
+  if (importAccounts.length === 0) {
+    showErrorToast('未能解析到任何账号信息，请检查格式')
+    return
+  }
+
+  isImporting.value = true
+  try {
+    const response = await gptAccountService.batchCreate(importAccounts)
+    const successCount = response.results.filter((r: any) => r.success).length
+    const failCount = response.results.length - successCount
+    
+    showSuccessToast(`导入完成: 成功 ${successCount} 个, 失败 ${failCount} 个`)
+    
+    if (failCount > 0) {
+      console.warn('部分账号导入失败:', response.results.filter((r: any) => !r.success))
+    }
+    
+    await loadAccounts()
+    showBatchImportDialog.value = false
+    batchImportData.value = ''
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '批量导入失败')
+  } finally {
+    isImporting.value = false
+  }
+}
 </script>
 
 <template>
   <div class="space-y-8">
     <!-- Header Actions -->
     <Teleport v-if="teleportReady" to="#header-actions">
-      <Button
-        @click="showDialog = true"
-        class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
-      >
-        <Plus class="w-4 h-4 mr-2" />
-        新建账号
-      </Button>
+      <div class="flex items-center gap-3">
+        <Button
+          @click="showBatchImportDialog = true"
+          variant="outline"
+          class="bg-white hover:bg-gray-50 text-gray-700 border-gray-200 rounded-xl px-5 h-10 shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Plus class="w-4 h-4 mr-2" />
+          批量导入
+        </Button>
+        <Button
+          @click="showDialog = true"
+          class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <Plus class="w-4 h-4 mr-2" />
+          新建账号
+        </Button>
+      </div>
     </Teleport>
 
     <!-- 筛选控制栏 -->
@@ -933,6 +1006,47 @@ const handleInviteSubmit = async () => {
         </div>
       </div>
     </div>
+
+    <!-- Batch Import Dialog -->
+    <Dialog v-model:open="showBatchImportDialog">
+      <DialogContent class="sm:max-w-[500px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl">
+        <DialogHeader class="px-8 pt-8 pb-4">
+          <DialogTitle class="text-2xl font-bold text-gray-900">
+            批量导入账号
+          </DialogTitle>
+          <p class="text-sm text-gray-500 mt-1">支持每行一个账号，将自动支持解析 Token、邮箱、ChatGPT ID 和 Refresh Token。</p>
+        </DialogHeader>
+        
+        <div class="px-8 pb-8 space-y-5">
+          <div class="space-y-2">
+            <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">批量数据</Label>
+            <textarea
+              v-model="batchImportData"
+              placeholder="eyJ... | example@mail.com | 00000000-0000-... | rt_..."
+              class="w-full h-48 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm resize-none"
+            ></textarea>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <Button
+              @click="handleBatchImport"
+              class="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold shadow-lg shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99]"
+              :disabled="isImporting"
+            >
+              <RefreshCw v-if="isImporting" class="w-4 h-4 mr-2 animate-spin" />
+              立即导入
+            </Button>
+            <Button
+              @click="showBatchImportDialog = false"
+              variant="ghost"
+              class="w-full h-12 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl font-medium transition-all"
+            >
+              取消
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
 
     <!-- Edit Dialog -->
     <Dialog v-model:open="showDialog">

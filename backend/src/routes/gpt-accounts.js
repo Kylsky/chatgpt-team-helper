@@ -250,6 +250,164 @@ router.get('/', async (req, res) => {
   }
 })
 
+// 生成随机兑换码的辅助函数
+function generateRedemptionCode(length = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 排除容易混淆的字符
+  let code = ''
+  for (let i = 0; i < length; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length))
+    // 每4位添加一个分隔符
+    if ((i + 1) % 4 === 0 && i < length - 1) {
+      code += '-'
+    }
+  }
+  return code
+}
+
+// 内部创建账号逻辑，不包含 saveDatabase()
+// 返回数组，支持一个输入对应多个（如 token 含有多个 team）
+async function createAccountInternal(db, body) {
+  let { email, token, refreshToken, userCount, chatgptAccountId, oaiDeviceId, expireAt } = body
+  const accountsToCreate = []
+
+  // Auto-complete if token is provided
+  if (token) {
+    try {
+      const tokenInfo = parseAccessToken(token)
+      const apiInfo = await fetchOpenAiAccountInfo(token, body.proxy)
+      const teams = apiInfo.accounts || []
+
+      if (teams.length > 0) {
+        // 如果提供了具体的 chatgptAccountId，则只创建那一个
+        const targetTeams = chatgptAccountId
+          ? teams.filter(t => t.accountId === chatgptAccountId)
+          : teams
+
+        for (const team of targetTeams) {
+          const detectedIsDemoted = team.isDemoted === true
+          accountsToCreate.push({
+            email: email || team.email || tokenInfo?.email || team.name || 'Team',
+            token,
+            refreshToken,
+            userCount: userCount !== undefined ? userCount : 1,
+            chatgptAccountId: team.accountId,
+            oaiDeviceId,
+            expireAt: expireAt || (team.expiresAt ? formatExpireAt(new Date(team.expiresAt)) : (tokenInfo?.exp ? formatExpireAt(new Date(tokenInfo.exp * 1000)) : null)),
+            isDemoted: body.isDemoted !== undefined ? body.isDemoted : detectedIsDemoted,
+            isBanned: body.isBanned
+          })
+        }
+      }
+    } catch (err) {
+      console.warn('Auto-completion failed during creation:', err.message)
+    }
+  }
+
+  // 如果没有自动补全出账号（或不需要补全），则使用原始输入
+  if (accountsToCreate.length === 0) {
+    accountsToCreate.push(body)
+  }
+
+  const finalResults = []
+
+  for (const accData of accountsToCreate) {
+    let { email: accEmail, token: accToken, refreshToken: accRefreshToken, userCount: accUserCount, chatgptAccountId: accChatgptAccountId, oaiDeviceId: accOaiDeviceId, expireAt: accExpireAt } = accData
+
+    const hasIsDemoted = Object.prototype.hasOwnProperty.call(accData, 'isDemoted') || Object.prototype.hasOwnProperty.call(accData, 'is_demoted')
+    const isDemotedInput = Object.prototype.hasOwnProperty.call(accData, 'isDemoted') ? accData.isDemoted : accData.is_demoted
+    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
+    if (hasIsDemoted && normalizedIsDemoted === null) {
+      throw new Error('Invalid isDemoted format')
+    }
+    const isDemotedValue = normalizedIsDemoted ? 1 : 0
+
+    const hasIsBanned = Object.prototype.hasOwnProperty.call(accData, 'isBanned') || Object.prototype.hasOwnProperty.call(accData, 'is_banned')
+    const isBannedInput = Object.prototype.hasOwnProperty.call(accData, 'isBanned') ? accData.isBanned : accData.is_banned
+    const normalizedIsBanned = hasIsBanned ? normalizeBoolean(isBannedInput) : null
+    if (hasIsBanned && normalizedIsBanned === null) {
+      throw new Error('Invalid isBanned format')
+    }
+    const isBannedValue = normalizedIsBanned ? 1 : 0
+
+    const normalizedChatgptAccountId = String(accChatgptAccountId ?? '').trim()
+    const normalizedOaiDeviceId = String(accOaiDeviceId ?? '').trim()
+    const normalizedExpireAt = normalizeExpireAt(accExpireAt)
+
+    if (!accEmail || !accToken || !normalizedChatgptAccountId) {
+      throw new Error('Email, token and ChatGPT ID are required')
+    }
+
+    if (accExpireAt != null && String(accExpireAt).trim() && !normalizedExpireAt) {
+      throw new Error('Invalid expireAt format')
+    }
+
+    const normalizedEmail = normalizeEmail(accEmail)
+    const finalUserCount = accUserCount !== undefined ? accUserCount : 1
+
+    db.run(
+      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_demoted, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+      [normalizedEmail, accToken, accRefreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isDemotedValue, isBannedValue]
+    )
+
+    // 获取新创建账号的ID
+    const accountResult = db.exec(`
+      SELECT id, email, token, refresh_token, user_count, invite_count, chatgpt_account_id, oai_device_id, expire_at, is_open,
+             COALESCE(is_demoted, 0) AS is_demoted,
+             COALESCE(is_banned, 0) AS is_banned,
+             created_at, updated_at
+      FROM gpt_accounts
+      WHERE id = last_insert_rowid()
+    `)
+    const row = accountResult[0].values[0]
+    const account = {
+      id: row[0],
+      email: row[1],
+      token: row[2],
+      refreshToken: row[3],
+      userCount: row[4],
+      inviteCount: row[5],
+      chatgptAccountId: row[6],
+      oaiDeviceId: row[7],
+      expireAt: row[8] || null,
+      isOpen: Boolean(row[9]),
+      isDemoted: Boolean(row[10]),
+      isBanned: Boolean(row[11]),
+      createdAt: row[12],
+      updatedAt: row[13]
+    }
+
+    // 自动生成5个兑换码并绑定到该账号
+    const generatedCodes = []
+    for (let i = 0; i < 5; i++) {
+      let codeValue = generateRedemptionCode()
+      let attempts = 0
+      let success = false
+
+      while (attempts < 5 && !success) {
+        try {
+          db.run(
+            `INSERT INTO redemption_codes (code, account_email, created_at, updated_at) VALUES (?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+            [codeValue, normalizedEmail]
+          )
+          generatedCodes.push(codeValue)
+          success = true
+        } catch (err) {
+          if (err.message.includes('UNIQUE')) {
+            codeValue = generateRedemptionCode()
+            attempts++
+          } else {
+            throw err
+          }
+        }
+      }
+    }
+
+    finalResults.push({ account, generatedCodes })
+  }
+
+  return finalResults
+}
+
 // Get a single GPT account
 router.get('/:id', async (req, res) => {
   try {
@@ -295,154 +453,57 @@ router.get('/:id', async (req, res) => {
 // Create a new GPT account
 router.post('/', async (req, res) => {
   try {
-    const body = req.body || {}
-    let { email, token, refreshToken, userCount, chatgptAccountId, oaiDeviceId, expireAt } = body
+    const db = await getDatabase()
+    const createResults = await createAccountInternal(db, req.body)
+    const { account, generatedCodes } = createResults[0] // 默认取第一个
+    saveDatabase()
 
-    // Auto-complete if token is provided but other key fields are missing
-    if (token && (!email || !chatgptAccountId)) {
-      try {
-        const tokenInfo = parseAccessToken(token)
-        const apiInfo = await fetchOpenAiAccountInfo(token, body.proxy)
-        if (!email && tokenInfo?.email) email = tokenInfo.email
-        if (!chatgptAccountId && apiInfo.accountId) chatgptAccountId = apiInfo.accountId
-        if (!expireAt) {
-          expireAt = apiInfo.expiresAt ? formatExpireAt(new Date(apiInfo.expiresAt)) : (tokenInfo?.exp ? formatExpireAt(new Date(tokenInfo.exp)) : null)
-        }
-      } catch (err) {
-        console.warn('Auto-completion failed during creation:', err.message)
-      }
+    res.status(201).json({
+      account,
+      generatedCodes,
+      message: createResults.length > 1
+        ? `成功创建了 ${createResults.length} 个账号，已自动生成相关兑换码`
+        : `账号创建成功，已自动生成 ${generatedCodes.length} 个兑换码`
+    })
+  } catch (error) {
+    if (error.message === 'Invalid isDemoted format' || error.message === 'Invalid isBanned format' || error.message === 'Email, token and ChatGPT ID are required' || error.message === 'Invalid expireAt format') {
+      return res.status(400).json({ error: error.message })
     }
+    console.error('Create GPT account error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
-    const hasIsDemoted = Object.prototype.hasOwnProperty.call(body, 'isDemoted') || Object.prototype.hasOwnProperty.call(body, 'is_demoted')
-    const isDemotedInput = Object.prototype.hasOwnProperty.call(body, 'isDemoted') ? body.isDemoted : body.is_demoted
-    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
-    if (hasIsDemoted && normalizedIsDemoted === null) {
-      return res.status(400).json({ error: 'Invalid isDemoted format' })
+// Batch create GPT accounts
+router.post('/batch', async (req, res) => {
+  try {
+    const { accounts } = req.body
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      return res.status(400).json({ error: 'Accounts array is required' })
     }
-    const isDemotedValue = normalizedIsDemoted ? 1 : 0
-
-    const hasIsBanned = Object.prototype.hasOwnProperty.call(body, 'isBanned') || Object.prototype.hasOwnProperty.call(body, 'is_banned')
-    const isBannedInput = Object.prototype.hasOwnProperty.call(body, 'isBanned') ? body.isBanned : body.is_banned
-    const normalizedIsBanned = hasIsBanned ? normalizeBoolean(isBannedInput) : null
-    if (hasIsBanned && normalizedIsBanned === null) {
-      return res.status(400).json({ error: 'Invalid isBanned format' })
-    }
-    const isBannedValue = normalizedIsBanned ? 1 : 0
-
-    const normalizedChatgptAccountId = String(chatgptAccountId ?? '').trim()
-    const normalizedOaiDeviceId = String(oaiDeviceId ?? '').trim()
-    const normalizedExpireAt = normalizeExpireAt(expireAt)
-
-    if (!email || !token || !normalizedChatgptAccountId) {
-      return res.status(400).json({ error: 'Email, token and ChatGPT ID are required' })
-    }
-
-    if (expireAt != null && String(expireAt).trim() && !normalizedExpireAt) {
-      return res.status(400).json({
-        error: 'Invalid expireAt format',
-        message: 'expireAt 格式错误，请使用 YYYY/MM/DD HH:mm'
-      })
-    }
-
-    const normalizedEmail = normalizeEmail(email)
 
     const db = await getDatabase()
+    const results = []
 
-    // 设置默认人数为1而不是0
-    const finalUserCount = userCount !== undefined ? userCount : 1
-
-    db.run(
-      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_demoted, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isDemotedValue, isBannedValue]
-    )
-
-    // 获取新创建账号的ID
-    const accountResult = db.exec(`
-		      SELECT id, email, token, refresh_token, user_count, invite_count, chatgpt_account_id, oai_device_id, expire_at, is_open,
-		             COALESCE(is_demoted, 0) AS is_demoted,
-		             COALESCE(is_banned, 0) AS is_banned,
-		             created_at, updated_at
-		      FROM gpt_accounts
-		      WHERE id = last_insert_rowid()
-		    `)
-    const row = accountResult[0].values[0]
-    const account = {
-      id: row[0],
-      email: row[1],
-      token: row[2],
-      refreshToken: row[3],
-      userCount: row[4],
-      inviteCount: row[5],
-      chatgptAccountId: row[6],
-      oaiDeviceId: row[7],
-      expireAt: row[8] || null,
-      isOpen: Boolean(row[9]),
-      isDemoted: Boolean(row[10]),
-      isBanned: Boolean(row[11]),
-      createdAt: row[12],
-      updatedAt: row[13]
-    }
-
-    // 生成随机兑换码的辅助函数
-    function generateRedemptionCode(length = 12) {
-      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 排除容易混淆的字符
-      let code = ''
-      for (let i = 0; i < length; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length))
-        // 每4位添加一个分隔符
-        if ((i + 1) % 4 === 0 && i < length - 1) {
-          code += '-'
+    for (const accountData of accounts) {
+      try {
+        const createResults = await createAccountInternal(db, accountData)
+        for (const singleResult of createResults) {
+          results.push({
+            success: true,
+            item: singleResult.account.email || accountData.token?.substring(0, 10),
+            ...singleResult
+          })
         }
-      }
-      return code
-    }
-
-    // 自动生成5个兑换码并绑定到该账号
-    const generatedCodes = []
-    for (let i = 0; i < 5; i++) {
-      let code = generateRedemptionCode()
-      let attempts = 0
-      let success = false
-
-      // 尝试生成唯一的兑换码（最多重试5次）
-      while (attempts < 5 && !success) {
-        try {
-          db.run(
-            `INSERT INTO redemption_codes (code, account_email, created_at, updated_at) VALUES (?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-            [code, normalizedEmail]
-          )
-          generatedCodes.push(code)
-          success = true
-        } catch (err) {
-          if (err.message.includes('UNIQUE')) {
-            // 如果重复，重新生成
-            code = generateRedemptionCode()
-            attempts++
-          } else {
-            throw err
-          }
-        }
+      } catch (error) {
+        results.push({ success: false, error: error.message, item: accountData.email || accountData.token?.substring(0, 10) })
       }
     }
 
     saveDatabase()
-
-    // 获取生成的兑换码信息
-    const codesResult = db.exec(`
-      SELECT code FROM redemption_codes
-      WHERE account_email = ?
-      ORDER BY created_at DESC
-    `, [normalizedEmail])
-
-    const codes = codesResult[0]?.values.map(row => row[0]) || []
-
-    res.status(201).json({
-      account,
-      generatedCodes: codes,
-      message: `账号创建成功，已自动生成${codes.length}个兑换码`
-    })
+    res.status(207).json({ results }) // Use 207 Multi-Status for batch operations
   } catch (error) {
-    console.error('Create GPT account error:', error)
+    console.error('Batch create GPT accounts error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
