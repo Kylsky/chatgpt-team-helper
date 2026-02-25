@@ -3,222 +3,265 @@
 [![Telegram 交流群](https://img.shields.io/badge/Telegram-交流群-blue?logo=telegram)](https://t.me/+W7iplSdBGXhlMDc1)
 [![Linux DO](https://img.shields.io/badge/Linux%20DO-Yelo-green?logo=discourse)](https://linux.do/u/yelo/summary)
 
-> **中文**：一个多渠道 Team 账号管理与兑换平台，支持多种订单来源、自动发货、积分体系、权限管理与 Telegram 机器人。  
-> **English**: A multi-channel Team account management and redemption platform with order integrations, auto-delivery, points system, RBAC, and Telegram bot support.
+> **中文**：面向新手可落地的多渠道 Team 账号管理与兑换平台文档。  
+> **English**: A beginner-friendly deployment guide for a multi-channel Team account management and redemption platform.
 
 ---
 
 ## 目录 / Table of Contents
 
-- [1. 项目概览 / Overview](#1-项目概览--overview)
-- [2. 核心功能 / Features](#2-核心功能--features)
+- [1. 项目介绍 / What is this](#1-项目介绍--what-is-this)
+- [2. 你将得到什么 / What you get](#2-你将得到什么--what-you-get)
 - [3. 系统架构 / Architecture](#3-系统架构--architecture)
-- [4. 技术栈 / Tech Stack](#4-技术栈--tech-stack)
-- [5. 快速开始（Docker，推荐）/ Quick Start](#5-快速开始docker推荐-quick-start)
-- [6. 本地开发 / Local Development](#6-本地开发--local-development)
-- [7. 配置说明 / Configuration](#7-配置说明--configuration)
-- [8. 运维与升级 / Operations & Upgrade](#8-运维与升级--operations--upgrade)
-- [9. 常见问题 / Troubleshooting](#9-常见问题--troubleshooting)
-- [10. 项目结构 / Project Structure](#10-项目结构--project-structure)
-- [11. 文档索引 / Documentation](#11-文档索引--documentation)
-- [12. 许可证 / License](#12-许可证--license)
+- [4. 部署路线选择 / Choose your deployment path](#4-部署路线选择--choose-your-deployment-path)
+- [5. 路线 A：Docker（VPS 推荐）/ Path A: Docker on VPS](#5-路线-adockervps-推荐-path-a-docker-on-vps)
+- [6. 路线 B：Zeabur（托管）/ Path B: Zeabur](#6-路线-bzeabur托管-path-b-zeabur)
+- [7. 首次登录后必做 / First-login checklist](#7-首次登录后必做--first-login-checklist)
+- [8. 商品与价格修改（网页后台）/ Product & pricing in Admin UI](#8-商品与价格修改网页后台-product--pricing-in-admin-ui)
+- [9. 常用配置模板 / Common config templates](#9-常用配置模板--common-config-templates)
+- [10. 更新、备份、回滚 / Update, backup, rollback](#10-更新备份回滚--update-backup-rollback)
+- [11. 新手排错指南 / Beginner troubleshooting](#11-新手排错指南--beginner-troubleshooting)
+- [12. 项目结构 / Project structure](#12-项目结构--project-structure)
+- [13. 文档索引 / Documentation](#13-文档索引--documentation)
+- [14. License](#14-license)
 
 ---
 
-## 1. 项目概览 / Overview
+## 1. 项目介绍 / What is this
 
 **中文**
 
-ChatGPT Team Helper 面向“账号分发 + 订单管理 + 自动兑换”场景，提供统一后台与自动化能力。你可以把它理解为一个轻量的运营控制台：
+ChatGPT Team Helper 用来做这几件事：
 
-- 管理 Team 账号库存、状态、有效期
-- 接入多来源订单（支付、小红书、闲鱼、Linux DO）
-- 用户侧自助兑换，系统自动发码/上车
-- 后台统一权限、统计和系统配置
+- 管理 Team 账号库存（开关、状态、到期）
+- 多渠道订单接入（支付、小红书、闲鱼、Linux DO）
+- 用户自助兑换，系统自动发码/上车
+- 管理员后台统一处理商品、订单、权限、通知
 
 **English**
 
-ChatGPT Team Helper is designed for account distribution and automated redemption workflows. It acts as a lightweight operations console:
+ChatGPT Team Helper helps you:
 
-- Manage Team account lifecycle, inventory, and status
-- Integrate multiple order sources (payments, XHS, Xianyu, Linux DO)
-- Enable self-service redemption with automatic fulfillment
-- Centralize permissions, metrics, and runtime configuration
+- Manage Team account inventory and lifecycle
+- Integrate multiple order channels (payment, XHS, Xianyu, Linux DO)
+- Offer self-service redemption with automatic fulfillment
+- Operate products, orders, permissions, and notifications in one Admin panel
 
 ---
 
-## 2. 核心功能 / Features
+## 2. 你将得到什么 / What you get
 
-### 2.1 账号与兑换 / Accounts & Redemption
-
-- Team 账号全生命周期管理（创建、编辑、封禁、到期）
-- 自动生成兑换码并关联账号
-- 多渠道兑换：通用、小红书、闲鱼、Linux DO
-- 补号/账号恢复（历史订单找回）
-
-### 2.2 订单与支付 / Orders & Payments
-
-- 在线购买（多商品）
-- Zpay / Linux DO Credit 支付支持
-- 支付回调、订单轮询、过期清理
-- 自动兑换 + 邮件/Telegram 通知
-
-### 2.3 平台能力 / Platform Capabilities
-
-- RBAC 权限管理（超级管理员 + 自定义角色）
-- 邀请奖励、购买奖励、积分返现
-- 候车室机制（排队、信任门槛、自动上车）
-- 系统设置后台化（大部分配置可在线调整）
+- ✅ 可登录的后台管理系统（admin）
+- ✅ 可访问的购买页面（用户下单）
+- ✅ 可配置商品（名称、价格、服务天数）
+- ✅ 可选开启支付、Telegram 机器人、第三方订单同步
 
 ---
 
 ## 3. 系统架构 / Architecture
 
 ```text
-┌───────────────────────────┐
-│        Frontend (Vue3)    │
-│ Admin / User / Purchase   │
-└──────────────┬────────────┘
-               │ /api
-┌──────────────▼────────────┐
-│     Backend (Express)     │
-│ Auth / Orders / Redeem    │
-│ Purchase / Open Accounts  │
-│ Telegram / Schedulers     │
-└──────────────┬────────────┘
-               │
-┌──────────────▼────────────┐
-│      SQLite (sql.js)      │
-│ Accounts / Orders / Config│
-└───────────────────────────┘
+Browser (Admin/User)
+        │
+        ▼
+Frontend (Vue3, served by Nginx)
+        │  /api
+        ▼
+Backend (Node.js + Express)
+        │
+        ▼
+SQLite (sql.js file)
 ```
 
-**关键流程 / Key Flow**
+**核心链路 / Core flow**
 
-1. 用户选商品并创建订单  
-2. 调起支付并等待回调  
-3. 回调验签通过后，自动兑换并入账  
-4. 发送邮件/TG 通知并更新后台状态
-
----
-
-## 4. 技术栈 / Tech Stack
-
-### Frontend
-- Vue 3 + TypeScript + Vite
-- Vue Router + Pinia
-- shadcn-vue + Tailwind CSS
-
-### Backend
-- Node.js + Express
-- SQLite (`sql.js`)
-- JWT Authentication
-- node-telegram-bot-api
-
-### Deployment
-- Docker / Docker Compose
-- Nginx reverse proxy
-- Supervisor process management
+1. 用户选商品并下单
+2. 支付平台回调通知
+3. 系统验签并更新订单状态
+4. 自动兑换 / 发码
+5. 邮件或 Telegram 通知
 
 ---
 
-## 5. 快速开始（Docker，推荐）/ Quick Start
+## 4. 部署路线选择 / Choose your deployment path
 
-### 5.1 克隆项目 / Clone
+- **路线 A（推荐）**：你有自己的 VPS（Ubuntu/Debian 等），用 Docker Compose 部署。
+- **路线 B**：你在 Zeabur 上托管部署（无需自己配服务器）。
+
+> 新手建议：先走路线 A 跑通，再加支付/机器人。
+
+---
+
+## 5. 路线 A：Docker（VPS 推荐）/ Path A: Docker on VPS
+
+### 5.1 前置条件检查（必做）
+
+```bash
+# 1) 查看系统版本
+uname -a
+
+# 2) 确认 Docker
+docker --version
+
+# 3) 确认 Docker Compose 插件
+docker compose version
+```
+
+如果没装 Docker（Ubuntu 示例）：
+
+```bash
+curl -fsSL https://get.docker.com | bash
+sudo usermod -aG docker $USER
+# 重新登录 shell 后生效
+```
+
+### 5.2 克隆仓库
 
 ```bash
 git clone https://github.com/Kylsky/chatgpt-team-helper.git
 cd chatgpt-team-helper
 ```
 
-### 5.2 准备环境变量 / Prepare env
+### 5.3 准备环境变量
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-最少需要配置（Minimum required）：
+编辑 `backend/.env`，至少填写：
 
 ```env
-JWT_SECRET=your-strong-random-secret
-INIT_ADMIN_PASSWORD=your-admin-password
+JWT_SECRET=请填写强随机字符串
+INIT_ADMIN_PASSWORD=请填写管理员密码
+CORS_ORIGINS=http://你的IP:5173,https://你的域名
 ```
 
-> 生产环境必须设置高强度 `JWT_SECRET`，否则后端会拒绝启动。
+生成安全随机密钥（推荐）：
 
-### 5.3 启动服务 / Start
+```bash
+openssl rand -base64 32
+```
+
+### 5.4 启动服务
 
 ```bash
 docker compose up -d
 ```
 
-访问地址 / Access:
-- `http://<your-server-ip>:5173`
-
-默认管理员 / Default admin:
-- 用户名：`admin`
-- 密码：`INIT_ADMIN_PASSWORD` 的值（若未设置会在日志随机生成）
-
-### 5.4 数据持久化 / Data persistence
-
-`docker-compose.yml` 默认将数据库目录挂载到宿主机 `./data`。
-
----
-
-## 6. 本地开发 / Local Development
-
-### 6.1 安装依赖 / Install
-
-```bash
-npm install
-```
-
-### 6.2 启动开发环境 / Run dev
-
-终端 1 / Terminal 1:
-```bash
-cd backend
-npm run dev
-```
-
-终端 2 / Terminal 2:
-```bash
-cd frontend
-npm run dev
-```
-
-访问地址 / Access:
-- Frontend: `http://localhost:5173`
-- Backend API: `http://localhost:3000`
-
----
-
-## 7. 配置说明 / Configuration
-
-完整变量请看：[`backend/.env.example`](backend/.env.example)
-
-高频配置（Most used）：
-
-- 基础安全：`JWT_SECRET`, `CORS_ORIGINS`
-- 支付：`ZPAY_BASE_URL`, `ZPAY_PID`, `ZPAY_KEY`
-- Telegram：`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`
-- Linux DO OAuth/Credit：`LINUXDO_CLIENT_ID`, `LINUXDO_CLIENT_SECRET`, `LINUXDO_CREDIT_*`
-- 定时任务：`ORDER_EXPIRATION_SWEEPER_*`, `XHS_AUTO_SYNC_*`, `XIANYU_*`
-
-> **价格与商品说明**：线上商品价格与服务期以数据库 `purchase_products` 为准；`.env` 主要用于初始化默认商品。
-
----
-
-## 8. 运维与升级 / Operations & Upgrade
-
-### 8.1 查看状态与日志
+检查是否已启动：
 
 ```bash
 docker compose ps
-docker compose logs -f app
+docker compose logs --tail 100 app
 ```
 
-### 8.2 更新版本（Git 部署）
+### 5.5 访问系统
+
+- 浏览器打开：`http://你的服务器IP:5173`
+- 用户名：`admin`
+- 密码：`INIT_ADMIN_PASSWORD`
+
+如果没配 `INIT_ADMIN_PASSWORD`，可查日志中的随机密码：
+
+```bash
+docker compose logs app | grep -i password
+```
+
+### 5.6 数据持久化说明（非常重要）
+
+默认 `docker-compose.yml` 已挂载：
+
+- 容器内：`/app/backend/db`
+- 宿主机：`./data`
+
+你的核心数据都在 `./data`。**升级前先备份这个目录。**
+
+---
+
+## 6. 路线 B：Zeabur（托管）/ Path B: Zeabur
+
+详细版见：[`docs/zeabur-deploy.md`](docs/zeabur-deploy.md)
+
+快速版：
+
+1. 新建项目 → 从 Git 仓库部署
+2. 设置环境变量：`JWT_SECRET`、`INIT_ADMIN_PASSWORD`
+3. 端口使用 `5173`
+4. 挂载持久化磁盘到 `/app/backend/db`
+5. Redeploy 后访问生成域名
+
+---
+
+## 7. 首次登录后必做 / First-login checklist
+
+登录后台后建议按顺序做：
+
+1. 修改管理员密码
+2. 检查“系统设置”中的关键配置
+3. 新增/编辑商品（价格、天数、渠道）
+4. 先做一次“测试下单（不接真实支付也行）”
+5. 再逐步开启 Telegram、支付、第三方同步
+
+> 不要一次性全开，按模块逐步验证最稳。
+
+---
+
+## 8. 商品与价格修改（网页后台）/ Product & pricing in Admin UI
+
+路径：**系统设置 → 支付商品管理**
+
+你可以直接网页交互式修改：
+
+- 商品名（productName）
+- 价格（amount）
+- 服务天数（serviceDays）
+- 订单类型（warranty / no_warranty）
+- 渠道优先级（codeChannels，例如 `paypal,common`）
+- 上下架（isActive）
+
+> 说明：线上下单读取的是数据库 `purchase_products`，不是实时读取 `.env` 价格。
+
+---
+
+## 9. 常用配置模板 / Common config templates
+
+### 9.1 最小可用（先跑通）
+
+```env
+JWT_SECRET=xxx
+INIT_ADMIN_PASSWORD=xxx
+CORS_ORIGINS=http://你的IP:5173
+```
+
+### 9.2 开启支付（Zpay）
+
+```env
+ZPAY_BASE_URL=https://zpayz.cn
+ZPAY_PID=你的pid
+ZPAY_KEY=你的key
+PUBLIC_BASE_URL=https://你的域名
+```
+
+### 9.3 开启 Telegram Bot
+
+```env
+TELEGRAM_BOT_TOKEN=123456:ABCDEF
+TELEGRAM_ALLOWED_USER_IDS=123456789
+TELEGRAM_NOTIFY_ENABLED=true
+TELEGRAM_NOTIFY_CHAT_IDS=123456789
+```
+
+---
+
+## 10. 更新、备份、回滚 / Update, backup, rollback
+
+### 10.1 升级前备份
+
+```bash
+cp -r data data.backup.$(date +%F-%H%M)
+```
+
+### 10.2 正常升级
 
 ```bash
 git pull
@@ -226,77 +269,77 @@ docker compose down
 docker compose up -d --build
 ```
 
-### 8.3 升级前建议 / Before upgrade
-
-- 备份数据库：`./data/database.sqlite`
-- 记录当前镜像 tag/commit，便于快速回滚
-
-### 8.4 Zeabur 用户
-
-请参考：[`docs/zeabur-deploy.md`](docs/zeabur-deploy.md)
-
----
-
-## 9. 常见问题 / Troubleshooting
-
-### 容器启动失败
+### 10.3 快速回滚
 
 ```bash
-docker compose logs app
-```
+# 1) 切回旧版本
+git log --oneline -n 10
+git checkout <old_commit>
 
-### 数据库目录权限问题
-
-```bash
-chmod 777 ./data
-docker compose restart app
-```
-
-### 本地端口占用
-
-```bash
-# backend:3000
-lsof -ti:3000 | xargs kill -9
-
-# frontend:5173
-lsof -ti:5173 | xargs kill -9
+# 2) 重建并启动
+docker compose down
+docker compose up -d --build
 ```
 
 ---
 
-## 10. 项目结构 / Project Structure
+## 11. 新手排错指南 / Beginner troubleshooting
+
+### Q1：页面打不开
+
+- 检查安全组/防火墙是否放行 `5173`
+- 执行：`docker compose ps`
+- 看日志：`docker compose logs --tail 100 app`
+
+### Q2：登录失败
+
+- 确认 admin 密码是否正确
+- 查看是否用了旧数据库（`./data`）
+- 如需重置请先备份数据后再处理
+
+### Q3：改了 .env 价格但前台没变
+
+- 这是预期行为
+- 去后台 **系统设置 → 支付商品管理** 改数据库商品
+
+### Q4：Zeabur 更新后配置丢失
+
+- 检查是否挂载了持久化磁盘 `/app/backend/db`
+- 检查环境变量是否在服务里保存
+
+### Q5：支付回调失败
+
+- 确认 `PUBLIC_BASE_URL` 可公网访问
+- 检查回调路径可达：`/notify`
+- 查看订单日志和支付网关日志对照排查
+
+---
+
+## 12. 项目结构 / Project structure
 
 ```text
 .
-├── frontend/              # Vue 3 前端
-│   └── src/
-│       ├── views/         # 页面
-│       ├── services/      # API 调用
-│       ├── router/        # 路由
-│       └── components/    # 组件
-├── backend/               # Node.js 后端
-│   └── src/
-│       ├── routes/        # API 路由
-│       ├── services/      # 业务服务
-│       ├── middleware/    # 认证/权限
-│       └── database/      # 初始化与迁移
-├── docs/                  # 文档
-├── Dockerfile
-├── docker-compose.yml
+├── frontend/               # Vue 前端
+│   └── src/views           # 管理后台与页面
+├── backend/                # Node 后端
+│   └── src/routes          # API 路由
+├── docs/                   # 文档
+├── docker-compose.yml      # Docker 编排
+├── Dockerfile              # 镜像构建
 └── README.md
 ```
 
 ---
 
-## 11. 文档索引 / Documentation
+## 13. 文档索引 / Documentation
 
-- 中文说明（纯中文）: [`docs/README.zh-CN.md`](docs/README.zh-CN.md)
+- 纯中文部署文档（更详细）: [`docs/README.zh-CN.md`](docs/README.zh-CN.md)
 - Zeabur 部署: [`docs/zeabur-deploy.md`](docs/zeabur-deploy.md)
 - 贡献指南: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - 安全策略: [`SECURITY.md`](SECURITY.md)
 
 ---
 
-## 12. 许可证 / License
+## 14. License
 
 ISC

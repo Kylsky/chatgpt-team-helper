@@ -1,217 +1,282 @@
-# ChatGPT Team Helper（中文说明）
+# ChatGPT Team Helper（中文部署手册｜新手完整版）
 
-> 本文档为**纯中文**版本，面向中文用户快速部署与运维。
+> 这份文档专门给第一次部署的新手。按顺序做，基本可以从 0 到可登录后台。
 
 ## 目录
 
-- [1. 项目简介](#1-项目简介)
-- [2. 适用场景](#2-适用场景)
-- [3. 功能清单](#3-功能清单)
-- [4. 架构说明](#4-架构说明)
-- [5. 部署教程（Docker）](#5-部署教程docker)
-- [6. 本地开发](#6-本地开发)
-- [7. 后台商品与价格修改](#7-后台商品与价格修改)
-- [8. 常用运维命令](#8-常用运维命令)
-- [9. 升级与回滚建议](#9-升级与回滚建议)
-- [10. 常见问题](#10-常见问题)
+- [1. 我需要准备什么](#1-我需要准备什么)
+- [2. 最快跑通（10 分钟）](#2-最快跑通10-分钟)
+- [3. 详细部署（VPS + Docker）](#3-详细部署vps--docker)
+- [4. Zeabur 部署要点](#4-zeabur-部署要点)
+- [5. 首次登录后的初始化顺序](#5-首次登录后的初始化顺序)
+- [6. 商品和价格怎么改（网页后台）](#6-商品和价格怎么改网页后台)
+- [7. 支付 / Telegram / Linux DO 配置入口](#7-支付--telegram--linux-do-配置入口)
+- [8. 升级、备份、回滚](#8-升级备份回滚)
+- [9. 常见报错与处理](#9-常见报错与处理)
+- [10. 安全建议（强烈推荐）](#10-安全建议强烈推荐)
 
 ---
 
-## 1. 项目简介
+## 1. 我需要准备什么
 
-ChatGPT Team Helper 是一个多渠道 Team 账号管理与兑换平台，覆盖：
+### 服务器方式（推荐）
 
-- 账号管理（库存、状态、有效期）
-- 兑换码管理（生成、发放、兑换）
-- 支付下单（Zpay / Linux DO Credit）
-- 订单自动化处理（回调、发码、通知）
-- 权限体系（RBAC）与后台系统配置
+- 一台 Linux 服务器（Ubuntu / Debian）
+- 已安装 Docker + Docker Compose
+- 能访问公网（至少你的浏览器能打开服务器 IP）
 
----
+### 必填信息
 
-## 2. 适用场景
-
-- 需要统一管理多渠道订单（网页购买 + 第三方订单）
-- 需要用户自助兑换、降低人工发码成本
-- 需要管理员后台可视化管理商品、价格、权限和统计
+- 管理员初始密码（你自己定）
+- 一个强随机 JWT 密钥（不要用示例值）
 
 ---
 
-## 3. 功能清单
-
-### 账号与兑换
-- Team 账号增删改查、封禁、到期管理
-- 兑换码自动生成并关联账号
-- 通用 / 小红书 / 闲鱼 / Linux DO 多渠道兑换
-- 订单找回与补号
-
-### 订单与支付
-- 多商品购买
-- 支付回调验签
-- 订单状态自动流转
-- 邮件和 Telegram 事件通知
-
-### 平台能力
-- 超级管理员 + 自定义角色权限
-- 邀请奖励、购买奖励、积分流水
-- 候车室、自动上车
-- 系统设置在线配置（多数功能无需改代码）
-
----
-
-## 4. 架构说明
-
-```text
-前端（Vue3）
-  ↓ /api
-后端（Express）
-  ↓
-数据库（SQLite / sql.js）
-```
-
-关键链路：
-1. 下单 → 2. 支付 → 3. 回调验签 → 4. 自动兑换 → 5. 通知 + 状态入库
-
----
-
-## 5. 部署教程（Docker）
-
-### 第一步：拉代码
+## 2. 最快跑通（10 分钟）
 
 ```bash
+# 1) 克隆项目
 git clone https://github.com/Kylsky/chatgpt-team-helper.git
 cd chatgpt-team-helper
+
+# 2) 准备环境变量
+cp backend/.env.example backend/.env
+
+# 3) 编辑 .env（至少改这两项）
+# JWT_SECRET=随机长字符串
+# INIT_ADMIN_PASSWORD=你的管理员密码
+
+# 4) 启动
+docker compose up -d
+
+# 5) 看状态
+docker compose ps
 ```
 
-### 第二步：配置环境变量
+浏览器访问：`http://服务器IP:5173`
+
+登录：
+- 用户名 `admin`
+- 密码 = 你设置的 `INIT_ADMIN_PASSWORD`
+
+如果没设置初始密码，去日志找随机密码：
+
+```bash
+docker compose logs app | grep -i password
+```
+
+---
+
+## 3. 详细部署（VPS + Docker）
+
+### 3.1 检查 Docker 环境
+
+```bash
+docker --version
+docker compose version
+```
+
+如果未安装（Ubuntu）：
+
+```bash
+curl -fsSL https://get.docker.com | bash
+sudo usermod -aG docker $USER
+# 退出后重新登录
+```
+
+### 3.2 配置 `.env`
 
 ```bash
 cp backend/.env.example backend/.env
+nano backend/.env
 ```
 
-最低必填：
+至少确保：
 
 ```env
-JWT_SECRET=请使用强随机字符串
-INIT_ADMIN_PASSWORD=管理员密码
+JWT_SECRET=请用 openssl rand -base64 32 生成
+INIT_ADMIN_PASSWORD=你自己设置的密码
+CORS_ORIGINS=http://你的IP:5173,https://你的域名
 ```
 
-### 第三步：启动服务
+生成密钥：
+
+```bash
+openssl rand -base64 32
+```
+
+### 3.3 启动服务
 
 ```bash
 docker compose up -d
 ```
 
-访问：`http://服务器IP:5173`
-
-登录账号：
-- 用户名：`admin`
-- 密码：`INIT_ADMIN_PASSWORD` 的值（未设置时可查日志）
-
----
-
-## 6. 本地开发
-
-```bash
-npm install
-```
-
-启动后端：
-```bash
-cd backend
-npm run dev
-```
-
-启动前端：
-```bash
-cd frontend
-npm run dev
-```
-
-- 前端：`http://localhost:5173`
-- 后端：`http://localhost:3000`
-
----
-
-## 7. 后台商品与价格修改
-
-> 你可以直接在后台网页交互式修改，不必改 `.env`。
-
-路径：**系统设置 → 支付商品管理**
-
-可操作：
-- 新增商品
-- 修改商品名
-- 修改价格（`amount`）
-- 修改服务天数（`serviceDays`）
-- 设置订单类型（`warranty / no_warranty`）
-- 配置渠道优先级（`codeChannels`，如 `paypal,common`）
-- 上下架商品
-
-说明：
-- 线上下单读取的是数据库 `purchase_products`
-- `.env` 中价格主要用于“首次初始化默认商品”
-
----
-
-## 8. 常用运维命令
-
-查看状态：
-```bash
-docker compose ps
-```
-
 查看日志：
+
 ```bash
 docker compose logs -f app
 ```
 
-重启服务：
-```bash
-docker compose restart app
+### 3.4 放行端口
+
+- 服务器安全组/防火墙放行 `5173`
+- 如果有域名，后续建议反代到 80/443
+
+---
+
+## 4. Zeabur 部署要点
+
+完整说明见 `docs/zeabur-deploy.md`，这里是你最容易漏掉的两件事：
+
+1. **端口必须用 5173**
+2. **持久化硬盘必须挂载到 `/app/backend/db`**
+
+否则常见现象：
+- 能部署但重启后数据丢失
+- 页面可访问但登录异常或配置丢失
+
+---
+
+## 5. 首次登录后的初始化顺序
+
+建议按这个顺序来：
+
+1. 修改管理员密码
+2. 进入系统设置，确认基础配置
+3. 配置商品（先配一个可售商品）
+4. 做一次测试下单（先不接真实支付也可以）
+5. 再逐步开启支付、TG 机器人、第三方同步
+
+> 核心原则：**先最小可用，再逐步叠加功能**。
+
+---
+
+## 6. 商品和价格怎么改（网页后台）
+
+路径：**系统设置 → 支付商品管理**
+
+你可以直接交互式修改：
+
+- 商品名称
+- 价格（amount）
+- 服务天数（serviceDays）
+- 订单类型（warranty/no_warranty）
+- 渠道优先级（codeChannels）
+- 上下架
+
+### 为什么我改 `.env` 的价格没生效？
+
+因为线上读取的是数据库 `purchase_products`。`.env` 主要用于首次初始化默认商品。
+
+---
+
+## 7. 支付 / Telegram / Linux DO 配置入口
+
+所有变量参考：`backend/.env.example`
+
+### 7.1 Zpay（支付）
+
+```env
+ZPAY_BASE_URL=https://zpayz.cn
+ZPAY_PID=你的pid
+ZPAY_KEY=你的key
+PUBLIC_BASE_URL=https://你的域名
 ```
 
-停止服务：
-```bash
-docker compose down
+### 7.2 Telegram 机器人
+
+```env
+TELEGRAM_BOT_TOKEN=bot token
+TELEGRAM_ALLOWED_USER_IDS=你的tg用户id
+TELEGRAM_NOTIFY_ENABLED=true
+TELEGRAM_NOTIFY_CHAT_IDS=接收通知的chat id
+```
+
+### 7.3 Linux DO OAuth / Credit
+
+```env
+LINUXDO_CLIENT_ID=xxx
+LINUXDO_CLIENT_SECRET=xxx
+LINUXDO_REDIRECT_URI=https://你的域名/redeem/linux-do
+LINUXDO_CREDIT_PID=xxx
+LINUXDO_CREDIT_KEY=xxx
 ```
 
 ---
 
-## 9. 升级与回滚建议
+## 8. 升级、备份、回滚
 
-升级前建议：
-1. 备份 `./data/database.sqlite`
-2. 记录当前 commit/tag
+### 8.1 升级前备份（一定做）
 
-升级：
+```bash
+cp -r data data.backup.$(date +%F-%H%M)
+```
+
+### 8.2 升级
+
 ```bash
 git pull
 docker compose down
 docker compose up -d --build
 ```
 
-回滚：
-- 切回上一个稳定 commit/tag，再次构建启动
-- 若涉及数据结构变更，先验证兼容性再回滚数据库
+### 8.3 回滚
 
-Zeabur 部署请看：`docs/zeabur-deploy.md`
+```bash
+git log --oneline -n 10
+git checkout <上一个稳定commit>
+docker compose down
+docker compose up -d --build
+```
 
 ---
 
-## 10. 常见问题
+## 9. 常见报错与处理
 
-### 1）容器起不来
-```bash
-docker compose logs app
-```
+### 9.1 启动报 JWT_SECRET 不安全
 
-### 2）数据库权限不足
-```bash
-chmod 777 ./data
-docker compose restart app
-```
+- 你用了默认值或留空
+- 重新生成随机密钥后重启
 
-### 3）改了 `.env` 价格但页面没变
-- 原因：实际读取的是数据库商品表
-- 解决：到后台“支付商品管理”里直接改商品价格
+### 9.2 页面打不开
+
+- 端口没放行
+- 容器没起来：`docker compose ps`
+- 日志排查：`docker compose logs app`
+
+### 9.3 登录失败
+
+- 用错密码
+- 老数据目录导致密码并非新 .env 值
+- 查日志确认初始密码是否生效
+
+### 9.4 下单成功但没回调
+
+- 检查 `PUBLIC_BASE_URL` 是否公网可达
+- 检查支付平台回调地址配置
+- 查看 `/notify` 日志
+
+### 9.5 改价后前台没刷新
+
+- 清缓存后重试
+- 确认改的是“支付商品管理”而不是 `.env`
+
+---
+
+## 10. 安全建议（强烈推荐）
+
+1. 不要把 `.env` 提交到公开仓库
+2. `JWT_SECRET` 使用强随机值
+3. 管理后台尽量走 HTTPS
+4. 生产环境限制 CORS 来源（不要 `*`）
+5. 定期备份 `data/` 并演练恢复
+
+---
+
+如果你刚接手这项目，建议你先只做三件事：
+
+1. 跑起来并登录后台
+2. 改一个商品价格并验证前台显示
+3. 做一次完整测试下单流程
+
+这三步打通后，再去接支付机器人和第三方渠道。
