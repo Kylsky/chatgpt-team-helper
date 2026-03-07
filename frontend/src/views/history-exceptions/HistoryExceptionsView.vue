@@ -11,6 +11,7 @@ const { error: showErrorToast, success: showSuccessToast } = useToast()
 const loading = ref(false)
 const errorText = ref('')
 const items = ref<HistoryExceptionItem[]>([])
+const selectedAccountIds = ref<number[]>([])
 const pagination = ref({ page: 1, pageSize: 20, total: 0, totalPages: 1 })
 
 const filters = ref({
@@ -40,6 +41,11 @@ const isSuperAdmin = computed<boolean>(() => {
 
 const canUpdate = computed(() => currentMenus.value.includes('history_exception:update') || isSuperAdmin.value)
 const canDelete = computed(() => currentMenus.value.includes('history_exception:delete') || isSuperAdmin.value)
+const selectedCount = computed(() => selectedAccountIds.value.length)
+const allCurrentPageSelected = computed(() => {
+  if (!items.value.length) return false
+  return items.value.every(item => selectedAccountIds.value.includes(item.accountId))
+})
 
 const statusLabel = (status: string) => {
   if (status === 'resolved') return '已解决'
@@ -67,6 +73,8 @@ const loadData = async () => {
       endTime: filters.value.endTime || undefined,
     })
     items.value = response.items || []
+    const currentPageIds = new Set(items.value.map(item => item.accountId))
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => currentPageIds.has(id))
     pagination.value = response.pagination || { page: 1, pageSize: 20, total: 0, totalPages: 1 }
   } catch (error: any) {
     errorText.value = error?.response?.data?.error || '加载失败'
@@ -79,6 +87,29 @@ const loadData = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const toggleSelectItem = (accountId: number) => {
+  if (selectedAccountIds.value.includes(accountId)) {
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => id !== accountId)
+    return
+  }
+  selectedAccountIds.value = [...selectedAccountIds.value, accountId]
+}
+
+const toggleSelectCurrentPage = () => {
+  if (!items.value.length) return
+  const currentPageIds = new Set(items.value.map(item => item.accountId))
+  if (allCurrentPageSelected.value) {
+    selectedAccountIds.value = selectedAccountIds.value.filter(id => !currentPageIds.has(id))
+    return
+  }
+  const merged = new Set([...selectedAccountIds.value, ...items.value.map(item => item.accountId)])
+  selectedAccountIds.value = Array.from(merged)
+}
+
+const clearSelection = () => {
+  selectedAccountIds.value = []
 }
 
 const applyFilters = () => {
@@ -107,6 +138,17 @@ const updateStatus = async (item: HistoryExceptionItem, status: HistoryException
   }
 }
 
+const batchUpdateStatus = async (status: HistoryExceptionStatus) => {
+  if (!canUpdate.value || selectedAccountIds.value.length === 0) return
+  try {
+    await historyExceptionService.batchUpdateStatus(selectedAccountIds.value, status)
+    showSuccessToast(`已批量更新 ${selectedAccountIds.value.length} 条记录`)
+    await loadData()
+  } catch (error: any) {
+    showErrorToast(error?.response?.data?.error || '批量更新状态失败')
+  }
+}
+
 const removeItem = async (item: HistoryExceptionItem) => {
   if (!canDelete.value) return
   const label = item.accountName || `账号 #${item.accountId}`
@@ -121,6 +163,25 @@ const removeItem = async (item: HistoryExceptionItem) => {
     await loadData()
   } catch (error: any) {
     showErrorToast(error?.response?.data?.error || '删除失败')
+  }
+}
+
+const batchRemove = async () => {
+  if (!canDelete.value || selectedAccountIds.value.length === 0) return
+  const selectedTotal = selectedAccountIds.value.length
+  const ok = window.confirm(`确认删除选中的 ${selectedTotal} 条历史异常记录？删除后不可恢复。`)
+  if (!ok) return
+
+  try {
+    await historyExceptionService.batchRemove(selectedAccountIds.value)
+    showSuccessToast(`已删除 ${selectedTotal} 条记录`)
+    selectedAccountIds.value = []
+    if (items.value.length === selectedTotal && pagination.value.page > 1) {
+      pagination.value.page -= 1
+    }
+    await loadData()
+  } catch (error: any) {
+    showErrorToast(error?.response?.data?.error || '批量删除失败')
   }
 }
 
@@ -154,6 +215,18 @@ onMounted(loadData)
         <button class="h-9 px-4 rounded-md bg-black text-white text-sm" @click="applyFilters">筛选</button>
         <button class="h-9 px-4 rounded-md border border-gray-300 text-sm" @click="resetFilters">重置</button>
       </div>
+
+      <div class="flex flex-wrap items-center gap-2 pt-1">
+        <button class="h-9 px-3 rounded-md border border-gray-300 text-sm" :disabled="items.length === 0" @click="toggleSelectCurrentPage">
+          {{ allCurrentPageSelected ? '取消全选本页' : '全选本页' }}
+        </button>
+        <button class="h-9 px-3 rounded-md border border-gray-300 text-sm" :disabled="selectedCount === 0" @click="clearSelection">清空选择</button>
+        <button class="h-9 px-3 rounded-md border border-gray-300 text-sm" :disabled="!canUpdate || selectedCount === 0" @click="batchUpdateStatus('active')">批量标记待处理</button>
+        <button class="h-9 px-3 rounded-md border border-gray-300 text-sm" :disabled="!canUpdate || selectedCount === 0" @click="batchUpdateStatus('resolved')">批量标记已解决</button>
+        <button class="h-9 px-3 rounded-md border border-gray-300 text-sm" :disabled="!canUpdate || selectedCount === 0" @click="batchUpdateStatus('ignored')">批量标记忽略</button>
+        <button class="h-9 px-3 rounded-md border border-red-300 text-red-600 text-sm" :disabled="!canDelete || selectedCount === 0" @click="batchRemove">批量删除</button>
+        <span class="text-xs text-gray-500">已选择 {{ selectedCount }} 条</span>
+      </div>
     </section>
 
     <section class="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -165,6 +238,15 @@ onMounted(loadData)
         <table class="hidden md:table w-full text-sm">
           <thead class="bg-gray-50 text-gray-500">
             <tr>
+              <th class="text-left px-4 py-3 w-14">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300"
+                  :checked="allCurrentPageSelected"
+                  :disabled="items.length === 0"
+                  @change="toggleSelectCurrentPage"
+                />
+              </th>
               <th class="text-left px-4 py-3">账号</th>
               <th class="text-left px-4 py-3">异常类型</th>
               <th class="text-left px-4 py-3">异常摘要</th>
@@ -175,6 +257,14 @@ onMounted(loadData)
           </thead>
           <tbody>
             <tr v-for="item in items" :key="item.accountId" class="border-t border-gray-100">
+              <td class="px-4 py-3 align-top">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300"
+                  :checked="selectedAccountIds.includes(item.accountId)"
+                  @change="toggleSelectItem(item.accountId)"
+                />
+              </td>
               <td class="px-4 py-3">
                 <div class="font-medium text-gray-900">{{ item.accountName || `账号 #${item.accountId}` }}</div>
                 <div class="text-xs text-gray-500">ID: {{ item.accountId }}</div>
@@ -204,6 +294,15 @@ onMounted(loadData)
           <article v-for="item in items" :key="item.accountId" class="p-4 space-y-3">
             <div class="flex items-start justify-between gap-3">
               <div>
+                <label class="inline-flex items-center gap-2 text-xs text-gray-500 mb-1">
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-gray-300"
+                    :checked="selectedAccountIds.includes(item.accountId)"
+                    @change="toggleSelectItem(item.accountId)"
+                  />
+                  选择
+                </label>
                 <div class="font-medium text-gray-900">{{ item.accountName || `账号 #${item.accountId}` }}</div>
                 <div class="text-xs text-gray-500">ID: {{ item.accountId }}</div>
               </div>
