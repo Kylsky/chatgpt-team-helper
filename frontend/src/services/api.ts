@@ -275,6 +275,7 @@ export interface GptAccount {
   isDemoted?: boolean
   isBanned?: boolean
   spaceType?: 'mother' | 'child'
+  spaceName?: string
   chatgptAccountId?: string
   oaiDeviceId?: string
   expireAt?: string | null
@@ -291,7 +292,6 @@ export interface CreateGptAccountDto {
   token: string
   refreshToken?: string
   userCount?: number
-  isDemoted?: boolean
   isBanned?: boolean
   spaceType?: 'mother' | 'child'
   chatgptAccountId: string
@@ -708,7 +708,6 @@ export interface OpenAccountItem {
   pendingCount: number | null
   expireAt?: string | null
   remainingCodes: number
-  isDemoted: boolean
   orderType?: string
   creditCost?: string | null
 }
@@ -1457,8 +1456,18 @@ export const historyExceptionService = {
     return response.data
   },
 
+  async batchUpdateStatus(accountIds: number[], status: HistoryExceptionStatus): Promise<{ status: HistoryExceptionStatus; updatedCount: number; accountIds: number[] }> {
+    const response = await api.put('/admin/history-exceptions/status/batch', { accountIds, status })
+    return response.data
+  },
+
   async remove(accountId: number): Promise<{ accountId: number; deleted: boolean }> {
     const response = await api.delete(`/admin/history-exceptions/${accountId}`)
+    return response.data
+  },
+
+  async batchRemove(accountIds: number[]): Promise<{ deleted: boolean; deletedCount: number; accountIds: number[] }> {
+    const response = await api.post('/admin/history-exceptions/batch-delete', { accountIds })
     return response.data
   },
 }

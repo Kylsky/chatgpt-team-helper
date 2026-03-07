@@ -327,6 +327,7 @@ const getAccountById = (db, accountId) => {
                COALESCE(space_type, '${SPACE_TYPE_CHILD}') AS space_type,
                COALESCE(space_status_code, 'unknown') AS space_status_code,
                space_status_reason,
+               COALESCE(space_name, '') AS space_name,
                created_at, updated_at
         FROM gpt_accounts
         WHERE id = ?
@@ -343,6 +344,7 @@ const getAccountById = (db, accountId) => {
                COALESCE(is_banned, 0) AS is_banned,
                COALESCE(sort_order, id) AS sort_order,
                COALESCE(space_type, '${SPACE_TYPE_CHILD}') AS space_type,
+               COALESCE(space_name, '') AS space_name,
                created_at, updated_at
         FROM gpt_accounts
         WHERE id = ?
@@ -355,8 +357,9 @@ const getAccountById = (db, accountId) => {
   const row = result[0].values[0]
   const spaceStatusCode = hasStatusColumns ? (row[14] || 'unknown') : 'unknown'
   const spaceStatusReason = hasStatusColumns ? (row[15] || '') : ''
-  const createdAt = hasStatusColumns ? row[16] : row[14]
-  const updatedAt = hasStatusColumns ? row[17] : row[15]
+  const spaceName = hasStatusColumns ? (row[16] || '') : (row[14] || '')
+  const createdAt = hasStatusColumns ? row[17] : row[15]
+  const updatedAt = hasStatusColumns ? row[18] : row[16]
 
   return {
     id: row[0],
@@ -369,12 +372,12 @@ const getAccountById = (db, accountId) => {
     oaiDeviceId: row[7],
     expireAt: row[8] || null,
     isOpen: Boolean(row[9]),
-    isDemoted: Boolean(row[10]),
     isBanned: Boolean(row[11]),
     sortOrder: Number(row[12] || 0),
     spaceType: row[13] || SPACE_TYPE_CHILD,
     spaceStatusCode,
     spaceStatusReason,
+    spaceName,
     createdAt,
     updatedAt,
     spaceStatus: resolveSpaceStatus({
@@ -512,9 +515,9 @@ router.get('/', async (req, res) => {
     const params = []
 
     if (search) {
-      conditions.push(`(LOWER(email) LIKE ? OR LOWER(token) LIKE ? OR LOWER(refresh_token) LIKE ? OR LOWER(chatgpt_account_id) LIKE ?)`)
+      conditions.push(`(LOWER(email) LIKE ? OR LOWER(space_name) LIKE ? OR LOWER(token) LIKE ? OR LOWER(refresh_token) LIKE ? OR LOWER(chatgpt_account_id) LIKE ?)`)
       const searchPattern = `%${search}%`
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern)
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
     }
 
     if (openStatus === 'open') {
@@ -554,6 +557,7 @@ router.get('/', async (req, res) => {
                COALESCE(space_type, '${SPACE_TYPE_CHILD}') AS space_type,
                COALESCE(space_status_code, 'unknown') AS space_status_code,
                space_status_reason,
+               COALESCE(space_name, '') AS space_name,
                created_at, updated_at
         FROM gpt_accounts
         ${whereClause}
@@ -567,6 +571,7 @@ router.get('/', async (req, res) => {
                COALESCE(is_demoted, 0) AS is_demoted,
                COALESCE(is_banned, 0) AS is_banned,
                COALESCE(sort_order, id) AS sort_order,
+               COALESCE(space_name, '') AS space_name,
                created_at, updated_at
         FROM gpt_accounts
         ${whereClause}
@@ -576,12 +581,13 @@ router.get('/', async (req, res) => {
     }
 
     const accounts = (dataResult[0]?.values || []).map(row => {
-      const hasStatusColumns = row.length >= 18
+      const hasStatusColumns = row.length >= 19
       const spaceType = hasStatusColumns ? (row[13] || SPACE_TYPE_CHILD) : SPACE_TYPE_CHILD
       const spaceStatusCode = hasStatusColumns ? (row[14] || 'normal') : 'normal'
       const spaceStatusReason = hasStatusColumns ? (row[15] || '') : ''
-      const createdAt = hasStatusColumns ? row[16] : row[13]
-      const updatedAt = hasStatusColumns ? row[17] : row[14]
+      const spaceName = hasStatusColumns ? (row[16] || '') : (row[13] || '')
+      const createdAt = hasStatusColumns ? row[17] : row[14]
+      const updatedAt = hasStatusColumns ? row[18] : row[15]
 
       return {
         id: row[0],
@@ -594,12 +600,12 @@ router.get('/', async (req, res) => {
         oaiDeviceId: row[7],
         expireAt: row[8] || null,
         isOpen: Boolean(row[9]),
-        isDemoted: Boolean(row[10]),
         isBanned: Boolean(row[11]),
         sortOrder: Number(row[12] || 0),
         spaceType,
         spaceStatusCode,
         spaceStatusReason,
+        spaceName,
         createdAt,
         updatedAt,
         spaceStatus: resolveSpaceStatus({
@@ -651,7 +657,6 @@ router.get('/:id', async (req, res) => {
 		      oaiDeviceId: row[7],
 		      expireAt: row[8] || null,
 		      isOpen: Boolean(row[9]),
-		      isDemoted: Boolean(row[10]),
 		      isBanned: Boolean(row[11]),
           spaceType: row[12] || SPACE_TYPE_CHILD,
 		      createdAt: row[13],
@@ -670,14 +675,6 @@ router.post('/', async (req, res) => {
   try {
     const body = req.body || {}
     const { email, token, refreshToken, userCount, chatgptAccountId, oaiDeviceId, expireAt } = body
-
-    const hasIsDemoted = Object.prototype.hasOwnProperty.call(body, 'isDemoted') || Object.prototype.hasOwnProperty.call(body, 'is_demoted')
-    const isDemotedInput = Object.prototype.hasOwnProperty.call(body, 'isDemoted') ? body.isDemoted : body.is_demoted
-    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
-    if (hasIsDemoted && normalizedIsDemoted === null) {
-      return res.status(400).json({ error: 'Invalid isDemoted format' })
-    }
-    const isDemotedValue = normalizedIsDemoted ? 1 : 0
 
     const hasIsBanned = Object.prototype.hasOwnProperty.call(body, 'isBanned') || Object.prototype.hasOwnProperty.call(body, 'is_banned')
     const isBannedInput = Object.prototype.hasOwnProperty.call(body, 'isBanned') ? body.isBanned : body.is_banned
@@ -722,7 +719,7 @@ router.post('/', async (req, res) => {
 
     db.run(
       `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_demoted, is_banned, space_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isDemotedValue, isBannedValue, spaceTypeValue]
+      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, 0, isBannedValue, spaceTypeValue]
     )
 
 		    // 获取新创建账号的ID
@@ -747,7 +744,6 @@ router.post('/', async (req, res) => {
 		      oaiDeviceId: row[7],
 		      expireAt: row[8] || null,
 		      isOpen: Boolean(row[9]),
-		      isDemoted: Boolean(row[10]),
 		      isBanned: Boolean(row[11]),
           spaceType: row[12] || SPACE_TYPE_CHILD,
 		      createdAt: row[13],
@@ -873,15 +869,6 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: 'Invalid spaceType' })
     }
 
-    const hasIsDemoted = Object.prototype.hasOwnProperty.call(body, 'isDemoted') || Object.prototype.hasOwnProperty.call(body, 'is_demoted')
-    const isDemotedInput = Object.prototype.hasOwnProperty.call(body, 'isDemoted') ? body.isDemoted : body.is_demoted
-    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
-    if (hasIsDemoted && normalizedIsDemoted === null) {
-      return res.status(400).json({ error: 'Invalid isDemoted format' })
-    }
-    const shouldUpdateIsDemoted = hasIsDemoted
-    const isDemotedValue = normalizedIsDemoted ? 1 : 0
-
     const hasIsBanned = Object.prototype.hasOwnProperty.call(body, 'isBanned') || Object.prototype.hasOwnProperty.call(body, 'is_banned')
     const isBannedInput = Object.prototype.hasOwnProperty.call(body, 'isBanned') ? body.isBanned : body.is_banned
     const normalizedIsBanned = hasIsBanned ? normalizeBoolean(isBannedInput) : null
@@ -928,7 +915,7 @@ router.put('/:id', async (req, res) => {
            oai_device_id = ?,
            expire_at = CASE WHEN ? = 1 THEN ? ELSE expire_at END,
            space_type = CASE WHEN ? = 1 THEN ? ELSE space_type END,
-           is_demoted = CASE WHEN ? = 1 THEN ? ELSE is_demoted END,
+           is_demoted = 0,
            is_banned = CASE WHEN ? = 1 THEN ? ELSE is_banned END,
            is_open = CASE WHEN ? = 1 THEN 0 ELSE is_open END,
            ban_processed = CASE WHEN ? = 1 THEN 0 ELSE ban_processed END,
@@ -945,8 +932,6 @@ router.put('/:id', async (req, res) => {
         normalizedExpireAt,
         hasSpaceType ? 1 : 0,
         normalizedSpaceType || SPACE_TYPE_CHILD,
-        shouldUpdateIsDemoted ? 1 : 0,
-        isDemotedValue,
         shouldUpdateIsBanned ? 1 : 0,
         isBannedValue,
         shouldApplyBanSideEffects ? 1 : 0,
@@ -985,7 +970,6 @@ router.put('/:id', async (req, res) => {
 		      oaiDeviceId: row[7],
 		      expireAt: row[8] || null,
 		      isOpen: Boolean(row[9]),
-		      isDemoted: Boolean(row[10]),
 		      isBanned: Boolean(row[11]),
           spaceType: row[12] || SPACE_TYPE_CHILD,
 		      createdAt: row[13],
@@ -1049,7 +1033,6 @@ router.patch('/:id/open', async (req, res) => {
 		      oaiDeviceId: row[7],
 		      expireAt: row[8] || null,
 		      isOpen: Boolean(row[9]),
-		      isDemoted: Boolean(row[10]),
 		      isBanned: Boolean(row[11]),
           spaceType: row[12] || SPACE_TYPE_CHILD,
 		      createdAt: row[13],
@@ -1099,6 +1082,7 @@ router.patch('/:id/ban', async (req, res) => {
                COALESCE(space_type, '${SPACE_TYPE_CHILD}') AS space_type,
                COALESCE(space_status_code, 'unknown') AS space_status_code,
                space_status_reason,
+               COALESCE(space_name, '') AS space_name,
                created_at, updated_at
         FROM gpt_accounts
         WHERE id = ?
@@ -1117,7 +1101,6 @@ router.patch('/:id/ban', async (req, res) => {
       oaiDeviceId: row[7],
       expireAt: row[8] || null,
       isOpen: Boolean(row[9]),
-      isDemoted: Boolean(row[10]),
       isBanned: Boolean(row[11]),
       sortOrder: Number(row[12] || 0),
       spaceType: row[13] || SPACE_TYPE_CHILD,

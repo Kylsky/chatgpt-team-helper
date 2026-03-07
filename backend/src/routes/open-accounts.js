@@ -264,7 +264,6 @@ const ensureOpenAccount = (db, accountId) => {
       WHERE id = ?
         AND is_open = 1
         AND COALESCE(is_banned, 0) = 0
-        AND COALESCE(is_demoted, 0) = 0
       LIMIT 1
     `,
     [accountId]
@@ -439,7 +438,6 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
                COALESCE(ga.user_count, 0) AS user_count,
                COALESCE(ga.invite_count, 0) AS invite_count,
                ga.expire_at,
-               COALESCE(ga.is_demoted, 0) AS is_demoted,
                code_stats.remaining_codes
         FROM gpt_accounts ga
         JOIN (
@@ -456,12 +454,7 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
         ) code_stats ON lower(ga.email) = code_stats.account_email_lower
         WHERE ga.is_open = 1
           AND COALESCE(ga.is_banned, 0) = 0
-          AND (
-            CASE
-              WHEN COALESCE(ga.is_demoted, 0) = 1 THEN (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < 6
-              ELSE (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < 5
-            END
-          )
+          AND (COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0)) < 5
           ${threshold ? "AND ga.created_at >= DATETIME('now', 'localtime', ?)" : ''}
         ORDER BY ga.created_at DESC
       `,
@@ -473,18 +466,9 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
       const email = row[1]
       const emailPrefix = String(email || '').split('@')[0] || ''
       const expireAt = row[4] ? String(row[4]) : null
-      const isDemoted = Number(row[5] || 0) === 1
-      const remainingCodes = Number(row[6] || 0)
-      const orderType = isDemoted ? ORDER_TYPE_ANTI_BAN : ORDER_TYPE_WARRANTY
+      const remainingCodes = Number(row[5] || 0)
+      const orderType = ORDER_TYPE_WARRANTY
       const discounted = formatCreditMoney(calculateDiscountedCredit(creditCost, expireAt))
-      const finalCost = (() => {
-        if (!discounted) return null
-        if (!isDemoted) return discounted
-        const parsed = Number.parseFloat(discounted)
-        if (!Number.isFinite(parsed) || parsed <= 0) return null
-        const half = Math.max(1, Math.floor(parsed / 2))
-        return formatCreditMoney(half)
-      })()
       return {
         id: row[0],
         emailPrefix,
@@ -492,9 +476,8 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
         pendingCount: Number(row[3]) || 0,
         expireAt,
         remainingCodes,
-        isDemoted,
         orderType,
-        creditCost: finalCost || discounted || creditCost || null
+        creditCost: discounted || creditCost || null
       }
     })
 
@@ -505,8 +488,7 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
                  email,
                  COALESCE(user_count, 0) AS user_count,
                  COALESCE(invite_count, 0) AS invite_count,
-                 expire_at,
-                 COALESCE(is_demoted, 0) AS is_demoted
+                 expire_at
           FROM gpt_accounts
           WHERE id = ?
           LIMIT 1
@@ -518,7 +500,6 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
         const email = currentRow[1]
         const emailPrefix = String(email || '').split('@')[0] || ''
         const expireAt = currentRow[4] ? String(currentRow[4]) : null
-        const isDemoted = Number(currentRow[5] || 0) === 1
         const remainingResult = db.exec(
           `
             SELECT COUNT(*)
@@ -534,16 +515,8 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
           [String(email || '').trim().toLowerCase()]
         )
         const remainingCodes = Number(remainingResult[0]?.values?.[0]?.[0] || 0)
-        const orderType = isDemoted ? ORDER_TYPE_ANTI_BAN : ORDER_TYPE_WARRANTY
+        const orderType = ORDER_TYPE_WARRANTY
         const discounted = formatCreditMoney(calculateDiscountedCredit(creditCost, expireAt))
-        const finalCost = (() => {
-          if (!discounted) return null
-          if (!isDemoted) return discounted
-          const parsed = Number.parseFloat(discounted)
-          if (!Number.isFinite(parsed) || parsed <= 0) return null
-          const half = Math.max(1, Math.floor(parsed / 2))
-          return formatCreditMoney(half)
-        })()
 
         items.unshift({
           id: currentRow[0],
@@ -552,9 +525,8 @@ router.get('/', authenticateLinuxDoSession, async (req, res) => {
           pendingCount: Number(currentRow[3]) || 0,
           expireAt,
           remainingCodes,
-          isDemoted,
           orderType,
-          creditCost: finalCost || discounted || creditCost || null
+          creditCost: discounted || creditCost || null
         })
       }
     }
@@ -624,7 +596,7 @@ router.post('/:accountId/board', authenticateLinuxDoSession, async (req, res) =>
 
       const accountRow = db.exec(
         `
-          SELECT id, email, expire_at, COALESCE(is_demoted, 0) AS is_demoted
+          SELECT id, email, expire_at
           FROM gpt_accounts
           WHERE id = ?
             AND is_open = 1
@@ -638,17 +610,9 @@ router.post('/:accountId/board', authenticateLinuxDoSession, async (req, res) =>
       }
       const accountEmail = accountRow[1] ? String(accountRow[1]) : ''
       const accountExpireAt = accountRow[2] ? String(accountRow[2]) : null
-      const isDemoted = Number(accountRow[3] || 0) === 1
-      const requestedOrderType = isDemoted ? ORDER_TYPE_ANTI_BAN : ORDER_TYPE_WARRANTY
+      const requestedOrderType = ORDER_TYPE_WARRANTY
       const discounted = formatCreditMoney(calculateDiscountedCredit(creditCost, accountExpireAt))
-      const actualCreditCost = (() => {
-        if (!discounted) return null
-        if (!isDemoted) return discounted
-        const parsed = Number.parseFloat(discounted)
-        if (!Number.isFinite(parsed) || parsed <= 0) return null
-        const half = Math.max(1, Math.floor(parsed / 2))
-        return formatCreditMoney(half)
-      })()
+      const actualCreditCost = discounted
       if (!accountEmail) {
         return { type: 'error', status: 500, error: '开放账号缺少邮箱配置' }
       }
@@ -789,7 +753,7 @@ router.post('/:accountId/board', authenticateLinuxDoSession, async (req, res) =>
             return { type: 'error', status: 500, error: '未配置上车所需积分' }
           }
 
-          const baseCapacity = isDemoted ? 6 : 5
+          const baseCapacity = 5
           // 若用户尚未在目标账号的成员/邀请列表中，且账号已满员，则不创建订单，避免授权后无法上车。
           if (!isMember && !isInvited) {
             const seatsUsed = Number(account.userCount || 0) + Number(account.inviteCount || 0)
@@ -924,7 +888,7 @@ router.post('/:accountId/board', authenticateLinuxDoSession, async (req, res) =>
           }
         }
 
-        const baseCapacity = isDemoted ? 6 : 5
+        const baseCapacity = 5
         const redeemCapacity = isMember || isInvited ? Math.max(baseCapacity, 6) : baseCapacity
         const redeemOutcome = await redeemOpenAccountsOrderCode(db, {
           orderNo: verifiedCreditOrderNo,

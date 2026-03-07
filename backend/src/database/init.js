@@ -1757,6 +1757,12 @@ export async function initDatabase() {
 	              saveDatabase()
 	            }
 
+	            if (!columns.includes('space_name')) {
+	              database.run('ALTER TABLE gpt_accounts ADD COLUMN space_name TEXT')
+	              console.log('已添加 space_name 列到 gpt_accounts 表')
+	              saveDatabase()
+	            }
+
             if (!columns.includes('sort_order')) {
               database.run('ALTER TABLE gpt_accounts ADD COLUMN sort_order INTEGER DEFAULT 0')
               console.log('已添加 sort_order 列到 gpt_accounts 表')
@@ -1912,6 +1918,7 @@ export async function initDatabase() {
 	      ban_processed INTEGER DEFAULT 0,
 	      sort_order INTEGER DEFAULT 0,
 	      space_type TEXT DEFAULT 'child',
+	      space_name TEXT,
 	      space_status_code TEXT DEFAULT 'normal',
 	      space_status_reason TEXT,
 	      created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
@@ -2016,6 +2023,11 @@ export async function initDatabase() {
 	      if (!columns.includes('space_type')) {
 	        database.run("ALTER TABLE gpt_accounts ADD COLUMN space_type TEXT DEFAULT 'child'")
 	        console.log('已添加 space_type 列到 gpt_accounts 表')
+	      }
+
+	      if (!columns.includes('space_name')) {
+	        database.run('ALTER TABLE gpt_accounts ADD COLUMN space_name TEXT')
+	        console.log('已添加 space_name 列到 gpt_accounts 表')
 	      }
 
 	      if (!columns.includes('space_status_code')) {
