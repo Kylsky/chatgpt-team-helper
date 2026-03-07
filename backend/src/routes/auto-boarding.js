@@ -154,18 +154,6 @@ router.post('/', apiKeyAuth, async (req, res) => {
     const derivedExpireAt = shouldUpdateExpireAt && !hasExpireAt ? deriveExpireAtFromToken(token) : null
     const expireAt = hasExpireAt ? normalizedExpireAt : (derivedExpireAt || null)
 
-    const hasIsDemoted = Object.prototype.hasOwnProperty.call(body, 'isDemoted') || Object.prototype.hasOwnProperty.call(body, 'is_demoted')
-    const isDemotedInput = Object.prototype.hasOwnProperty.call(body, 'isDemoted') ? body.isDemoted : body.is_demoted
-    const normalizedIsDemoted = hasIsDemoted ? normalizeBoolean(isDemotedInput) : null
-    if (hasIsDemoted && normalizedIsDemoted === null) {
-      return res.status(400).json({
-        error: 'Invalid isDemoted format',
-        message: 'isDemoted 格式错误，请使用 true/false 或 1/0'
-      })
-    }
-    const shouldUpdateIsDemoted = hasIsDemoted
-    const isDemotedValue = normalizedIsDemoted ? 1 : 0
-
     if (hasExpireAt && expireAtInput != null && String(expireAtInput).trim() && !normalizedExpireAt) {
       return res.status(400).json({
         error: 'Invalid expireAt format',
@@ -225,10 +213,10 @@ router.post('/', apiKeyAuth, async (req, res) => {
              oai_device_id = ?,
              is_open = 1,
              expire_at = CASE WHEN ? = 1 THEN ? ELSE expire_at END,
-             is_demoted = CASE WHEN ? = 1 THEN ? ELSE is_demoted END,
+             is_demoted = 0,
              updated_at = DATETIME('now', 'localtime')
          WHERE id = ?`,
-        [token, refreshToken || null, chatgptAccountId || null, oaiDeviceId || null, shouldUpdateExpireAt ? 1 : 0, expireAt, shouldUpdateIsDemoted ? 1 : 0, isDemotedValue, existingAccount.id]
+        [token, refreshToken || null, chatgptAccountId || null, oaiDeviceId || null, shouldUpdateExpireAt ? 1 : 0, expireAt, existingAccount.id]
       )
       saveDatabase()
 
@@ -251,7 +239,6 @@ router.post('/', apiKeyAuth, async (req, res) => {
         chatgptAccountId: row[5],
         oaiDeviceId: row[6],
         expireAt: row[7] || null,
-        isDemoted: Boolean(row[8]),
         createdAt: row[9],
         updatedAt: row[10]
       }
@@ -280,7 +267,7 @@ router.post('/', apiKeyAuth, async (req, res) => {
           chatgptAccountId || null,
           oaiDeviceId || null,
           expireAt,
-          shouldUpdateIsDemoted ? isDemotedValue : 0,
+          0,
           SPACE_TYPE_CHILD
         ]
       )
@@ -305,7 +292,6 @@ router.post('/', apiKeyAuth, async (req, res) => {
         chatgptAccountId: row[5],
         oaiDeviceId: row[6],
         expireAt: row[7] || null,
-        isDemoted: Boolean(row[8]),
         spaceType: row[9] || SPACE_TYPE_CHILD,
         createdAt: row[10],
         updatedAt: row[11]

@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
-import { Coins, Gift, RefreshCw, Wallet, Link2, HelpCircle } from 'lucide-vue-next'
+import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { success: showSuccessToast, error: showErrorToast } = useToast()
@@ -521,44 +521,12 @@ onUnmounted(() => {
               <div class="space-y-2">
                 <div class="flex items-center justify-between">
                   <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">名额类型</Label>
-                  <span class="relative group cursor-help inline-flex items-center gap-1 text-gray-400">
-                    <HelpCircle class="w-4 h-4" />
-	                    <div class="absolute bottom-full right-0 mb-2 w-72 p-3 bg-gray-900/90 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none text-left">
-	                      <div class="font-bold mb-2 border-b border-white/20 pb-1">未降级 vs 已降级</div>
-	                      <div class="space-y-1.5">
-	                        <div><span class="font-semibold">未降级：</span>质保 30 天，空间有概率封禁。</div>
-	                        <div><span class="font-semibold">已降级：</span>质保 30 天，空间封禁概率低，缺点是无法退出工作空间。</div>
-	                      </div>
-	                      <div class="absolute bottom-[-4px] right-4 w-2 h-2 bg-gray-900/90 rotate-45"></div>
-	                    </div>
-	                  </span>
-	                </div>
 
-                <div class="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    class="h-10 rounded-xl border text-sm font-medium transition-colors px-4 disabled:opacity-60 disabled:cursor-not-allowed"
-                    :class="teamSeatType === 'undemoted' ? 'bg-black text-white border-black' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'"
-                    :disabled="redeemingTeamSeat"
-                    @click="teamSeatType = 'undemoted'"
-                  >
-                    <span class="flex items-center justify-between w-full">
-                      <span>未降级</span>
-                      <span class="text-xs tabular-nums opacity-80">{{ teamSeatRemainingByType.undemoted }}</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="h-10 rounded-xl border text-sm font-medium transition-colors px-4 disabled:opacity-60 disabled:cursor-not-allowed"
-                    :class="teamSeatType === 'demoted' ? 'bg-black text-white border-black' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'"
-                    :disabled="redeemingTeamSeat"
-                    @click="teamSeatType = 'demoted'"
-                  >
-                    <span class="flex items-center justify-between w-full">
-                      <span>已降级</span>
-                      <span class="text-xs tabular-nums opacity-80">{{ teamSeatRemainingByType.demoted }}</span>
-                    </span>
-                  </button>
+                </div>
+
+                <div class="h-10 rounded-xl border bg-black text-white border-black text-sm font-medium px-4 flex items-center justify-between">
+                  <span>标准名额</span>
+                  <span class="text-xs tabular-nums opacity-80">{{ teamSeatRemainingByType.undemoted }}</span>
                 </div>
               </div>
 

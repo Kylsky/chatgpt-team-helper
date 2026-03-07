@@ -95,8 +95,9 @@ function mapRowToAccount(row) {
     isDemoted: Boolean(row[10]),
     isBanned: Boolean(row[11]),
     spaceType: row[12] || 'child',
-    createdAt: row[13],
-    updatedAt: row[14]
+    spaceName: row[13] || '',
+    createdAt: row[14],
+    updatedAt: row[15]
   }
 }
 
@@ -107,6 +108,7 @@ async function fetchAccountById(db, accountId) {
            COALESCE(is_demoted, 0) AS is_demoted,
            COALESCE(is_banned, 0) AS is_banned,
            COALESCE(space_type, 'child') AS space_type,
+           COALESCE(space_name, '') AS space_name,
            created_at, updated_at
     FROM gpt_accounts
     WHERE id = ?
@@ -269,6 +271,7 @@ export async function fetchAllAccounts() {
            COALESCE(is_demoted, 0) AS is_demoted,
            COALESCE(is_banned, 0) AS is_banned,
            COALESCE(space_type, 'child') AS space_type,
+           COALESCE(space_name, '') AS space_name,
            created_at, updated_at
     FROM gpt_accounts
     ORDER BY created_at DESC
@@ -810,6 +813,21 @@ export async function fetchAccountUsersList(accountId, options = {}) {
   return usersData
 }
 
+
+async function resolveSpaceNameByAccountId(account, options = {}) {
+  const token = String(account?.token || '').trim()
+  const chatgptAccountId = String(account?.chatgptAccountId || '').trim()
+  if (!token || !chatgptAccountId) return ''
+
+  try {
+    const accountInfos = await fetchOpenAiAccountInfo(token, options.proxy ?? null)
+    const target = accountInfos.find(item => String(item?.accountId || '').trim() === chatgptAccountId)
+    return String(target?.name || '').trim()
+  } catch (error) {
+    return ''
+  }
+}
+
 export async function syncAccountUserCount(accountId, options = {}) {
   const db = await getDatabase()
   const account =
@@ -830,9 +848,11 @@ export async function syncAccountUserCount(accountId, options = {}) {
     { db, action: 'syncAccountUserCount' }
   )
 
+  const syncedSpaceName = await resolveSpaceNameByAccountId(syncedAccount, options)
+
   db.run(
-    `UPDATE gpt_accounts SET user_count = ?, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
-    [usersData.total, syncedAccount.id]
+    `UPDATE gpt_accounts SET user_count = ?, space_name = CASE WHEN ? <> '' THEN ? ELSE space_name END, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
+    [usersData.total, syncedSpaceName, syncedSpaceName, syncedAccount.id]
   )
   await saveDatabase()
 
@@ -887,9 +907,11 @@ export async function syncAccountInviteCount(accountId, options = {}) {
     { db, action: 'syncAccountInviteCount' }
   )
 
+  const syncedSpaceName = await resolveSpaceNameByAccountId(syncedAccount, options)
+
   db.run(
-    `UPDATE gpt_accounts SET invite_count = ?, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
-    [invitesData.total, syncedAccount.id]
+    `UPDATE gpt_accounts SET invite_count = ?, space_name = CASE WHEN ? <> '' THEN ? ELSE space_name END, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
+    [invitesData.total, syncedSpaceName, syncedSpaceName, syncedAccount.id]
   )
   await saveDatabase()
 
