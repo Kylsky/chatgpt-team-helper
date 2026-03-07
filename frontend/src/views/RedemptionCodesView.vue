@@ -74,28 +74,6 @@ const updatingChannelId = ref<number | null>(null)
 let popoverTimer: ReturnType<typeof setTimeout> | null = null
 const { success: showSuccessToast, info: showInfoToast, warning: showWarningToast, error: showErrorToast } = useToast()
 
-const accountsByEmail = computed(() => {
-  const map = new Map<string, GptAccount>()
-  for (const account of accounts.value) {
-    const normalizedEmail = String(account?.email || '').trim().toLowerCase()
-    if (!normalizedEmail) continue
-    map.set(normalizedEmail, account)
-  }
-  return map
-})
-
-const accountDemotionMeta = (accountEmail?: string | null) => {
-  const normalizedEmail = String(accountEmail || '').trim().toLowerCase()
-  if (!normalizedEmail) return null
-  const account = accountsByEmail.value.get(normalizedEmail)
-  if (!account) {
-    return { label: '未知', className: 'bg-gray-50 text-gray-500 border-gray-200' }
-  }
-  return account.isDemoted
-    ? { label: '已降级', className: 'bg-orange-50 text-orange-700 border-orange-200' }
-    : { label: '未降级', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
-}
-
 // 同步相关状态（参考账号管理的同步按钮交互）
 const syncingAccountId = ref<number | null>(null)
 const syncingAccountEmail = ref<string | null>(null)
@@ -468,7 +446,7 @@ const copyToClipboard = async (text: string, options: { silent?: boolean } = {})
       showSuccessToast('已复制到剪贴板')
     }
   } catch (err) {
-    // 降级方案
+    // 兜底方案
     const textarea = document.createElement('textarea')
     textarea.value = text
     document.body.appendChild(textarea)
@@ -1021,13 +999,6 @@ const handleInviteSubmit = async () => {
                         <span class="truncate">{{ code.accountEmail }}</span>
                         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': syncingAccountEmail === code.accountEmail }" />
                       </button>
-                      <span
-                        v-if="accountDemotionMeta(code.accountEmail)"
-                        class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium"
-                        :class="accountDemotionMeta(code.accountEmail)?.className"
-                      >
-                        {{ accountDemotionMeta(code.accountEmail)?.label }}
-                      </span>
                     </template>
                     <span v-else class="text-sm text-gray-400">-</span>
                   </div>
@@ -1159,13 +1130,6 @@ const handleInviteSubmit = async () => {
 	                          {{ code.accountEmail.charAt(0).toUpperCase() }}
 	                        </div>
 	                        <span class="text-xs text-gray-700 truncate">{{ code.accountEmail }}</span>
-	                        <span
-	                          v-if="accountDemotionMeta(code.accountEmail)"
-	                          class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium flex-shrink-0"
-	                          :class="accountDemotionMeta(code.accountEmail)?.className"
-	                        >
-	                          {{ accountDemotionMeta(code.accountEmail)?.label }}
-	                        </span>
 	                        <RefreshCw class="w-3.5 h-3.5 text-gray-400 ml-auto" :class="{ 'animate-spin': syncingAccountEmail === code.accountEmail }" />
 	                      </button>
                       <div v-else class="w-full h-8 flex items-center px-3 gap-2 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">

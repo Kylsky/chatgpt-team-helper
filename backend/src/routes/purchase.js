@@ -643,8 +643,7 @@ const getTodayAvailableCodeCount = (db) => {
         AND rc.channel = 'common'
         AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
-        AND COALESCE(ga.is_demoted, 0) = 0
-        AND ga.user_count < 5
+                AND ga.user_count < 5
         AND DATE(ga.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
@@ -663,8 +662,7 @@ const reserveTodayCode = (db, { orderNo, email }) => {
         AND rc.channel = 'common'
         AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
-        AND COALESCE(ga.is_demoted, 0) = 0
-        AND ga.user_count < 5
+                AND ga.user_count < 5
         AND DATE(ga.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
@@ -1274,8 +1272,7 @@ const getDemotedAvailableCodeCount = (db) => {
         AND rc.channel = 'common'
         AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
-        AND COALESCE(ga.is_demoted, 0) = 1
-        AND ga.user_count < 5
+                AND ga.user_count < 5
         AND DATE(ga.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
@@ -1294,8 +1291,7 @@ const reserveDemotedCode = (db, { orderNo, email }) => {
         AND rc.channel = 'common'
         AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
-        AND COALESCE(ga.is_demoted, 0) = 1
-        AND ga.user_count < 5
+                AND ga.user_count < 5
         AND DATE(ga.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)

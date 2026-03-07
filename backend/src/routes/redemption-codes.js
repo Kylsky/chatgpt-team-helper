@@ -392,20 +392,13 @@ export async function redeemCodeInternal({
     }
   }
 
-  const mustUseUndemotedAccount = requestedChannel === 'xhs'
-    || (requestedChannel === 'xianyu' && !isNoWarrantyOrderType(resolvedOrderType))
-    || (Boolean(reservedForOrderNo) && !isAntiBanOrderType(resolvedOrderType))
-
-  const mustUseDemotedAccount = requestedChannel === 'xianyu' && isNoWarrantyOrderType(resolvedOrderType)
-
   let accountResult
 
   const maxSeats = Math.max(1, Math.min(SPACE_MEMBER_LIMIT, Number(capacityLimit) || SPACE_MEMBER_LIMIT))
 
   if (boundAccountEmail) {
     accountResult = db.exec(`
-        SELECT id, email, token, user_count, chatgpt_account_id, oai_device_id,
-               COALESCE(is_demoted, 0) AS is_demoted
+        SELECT id, email, token, user_count, chatgpt_account_id, oai_device_id
         FROM gpt_accounts
         WHERE email = ?
           AND COALESCE(user_count, 0) + COALESCE(invite_count, 0) < ?
@@ -416,12 +409,9 @@ export async function redeemCodeInternal({
     }
   } else {
     accountResult = db.exec(`
-        SELECT id, email, token, user_count, chatgpt_account_id, oai_device_id,
-               COALESCE(is_demoted, 0) AS is_demoted
+        SELECT id, email, token, user_count, chatgpt_account_id, oai_device_id
         FROM gpt_accounts
         WHERE COALESCE(user_count, 0) + COALESCE(invite_count, 0) < ?
-          ${mustUseUndemotedAccount ? 'AND COALESCE(is_demoted, 0) = 0' : ''}
-          ${mustUseDemotedAccount ? 'AND COALESCE(is_demoted, 0) = 1' : ''}
         ORDER BY COALESCE(user_count, 0) + COALESCE(invite_count, 0) ASC, RANDOM()
         LIMIT 1
       `, [maxSeats])
@@ -429,21 +419,12 @@ export async function redeemCodeInternal({
     if (accountResult.length === 0 || accountResult[0].values.length === 0) {
       throw new RedemptionError(
         503,
-        mustUseDemotedAccount
-          ? '暂无可用已降级账号，请稍后再试或联系管理员'
-          : '暂无可用账号，请稍后再试或联系管理员'
+        '暂无可用账号，请稍后再试或联系管理员'
       )
     }
   }
 
   const account = accountResult[0].values[0]
-  const isAccountDemoted = Number(account[6] || 0) === 1
-  if (mustUseUndemotedAccount && isAccountDemoted) {
-    throw new RedemptionError(503, '该兑换码绑定的账号已降级，暂不可用，请联系管理员')
-  }
-  if (mustUseDemotedAccount && !isAccountDemoted) {
-    throw new RedemptionError(503, '无质保订单需要使用已降级账号的兑换码，请联系管理员')
-  }
   const accountId = account[0]
   const accountEmail = account[1]
   const accountToken = account[2]
@@ -1600,8 +1581,7 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 		                SELECT 1
 		                FROM gpt_accounts ga
 	                WHERE lower(ga.email) = lower(rc.account_email)
-	                  AND COALESCE(ga.is_demoted, 0) = 0
-	              )
+	                  	              )
 	            )
 	          ORDER BY rc.created_at ASC
 	          LIMIT 1
@@ -1627,8 +1607,7 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 		                  SELECT 1
 	                  FROM gpt_accounts ga
 	                  WHERE lower(ga.email) = lower(rc.account_email)
-	                    AND COALESCE(ga.is_demoted, 0) = 0
-	                )
+	                    	                )
 	              )
 	            ORDER BY rc.created_at ASC
 	            LIMIT 1
@@ -1655,8 +1634,7 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
                       SELECT 1
                       FROM gpt_accounts ga
                       WHERE lower(ga.email) = lower(rc.account_email)
-                        AND COALESCE(ga.is_demoted, 0) = 0
-                    )
+                                            )
                   )
                 ORDER BY rc.created_at ASC
                 LIMIT 1
@@ -1681,8 +1659,7 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
                         SELECT 1
                         FROM gpt_accounts ga
                         WHERE lower(ga.email) = lower(rc.account_email)
-                          AND COALESCE(ga.is_demoted, 0) = 0
-                      )
+                                                )
                     )
                   ORDER BY rc.created_at ASC
                   LIMIT 1
@@ -1741,8 +1718,7 @@ router.post('/xhs/redeem-order', requireFeatureEnabled('xhs'), async (req, res) 
 	                  SELECT 1
 	                  FROM gpt_accounts ga
 	                  WHERE lower(ga.email) = lower(rc.account_email)
-	                    AND COALESCE(ga.is_demoted, 0) = 0
-	                )
+	                    	                )
 	              )
 	          `
 	        )
@@ -1915,7 +1891,6 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
       const now = new Date()
       const fallbackToYesterdayEnabled = !Boolean(strictToday) && now.getHours() >= 0 && now.getHours() < 8
       const resolvedOrderType = resolveXianyuOrderTypeFromActualPaid(orderRecord.actualPaid)
-      const expectedDemoted = isNoWarrantyOrderType(resolvedOrderType) ? 1 : 0
       const orderTypeLabel = isNoWarrantyOrderType(resolvedOrderType) ? '无质保' : '质保'
 
 	      const availableCodeResult = db.exec(
@@ -1934,8 +1909,7 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 	                SELECT 1
                 FROM gpt_accounts ga
                 WHERE lower(ga.email) = lower(rc.account_email)
-                  AND COALESCE(ga.is_demoted, 0) = ${expectedDemoted}
-              )
+                                )
             )
           ORDER BY rc.created_at ASC
           LIMIT 1
@@ -1961,8 +1935,7 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
 	                  SELECT 1
                   FROM gpt_accounts ga
                   WHERE lower(ga.email) = lower(rc.account_email)
-                    AND COALESCE(ga.is_demoted, 0) = ${expectedDemoted}
-                )
+                                    )
               )
             ORDER BY rc.created_at ASC
             LIMIT 1
@@ -1989,8 +1962,7 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
                       SELECT 1
                       FROM gpt_accounts ga
                       WHERE lower(ga.email) = lower(rc.account_email)
-                        AND COALESCE(ga.is_demoted, 0) = ${expectedDemoted}
-                    )
+                                            )
                   )
                 ORDER BY rc.created_at ASC
                 LIMIT 1
@@ -2015,8 +1987,7 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
                         SELECT 1
                         FROM gpt_accounts ga
                         WHERE lower(ga.email) = lower(rc.account_email)
-                          AND COALESCE(ga.is_demoted, 0) = ${expectedDemoted}
-                      )
+                                                )
                     )
                   ORDER BY rc.created_at ASC
                   LIMIT 1
@@ -2076,8 +2047,7 @@ router.post('/xianyu/redeem-order', requireFeatureEnabled('xianyu'), async (req,
                   SELECT 1
                   FROM gpt_accounts ga
                   WHERE lower(ga.email) = lower(rc.account_email)
-                    AND COALESCE(ga.is_demoted, 0) = ${expectedDemoted}
-                )
+                                    )
               )
           `
         )

@@ -195,7 +195,6 @@ const formData = ref<CreateGptAccountDto>({
   token: '',
   refreshToken: '',
   userCount: 0,
-  isDemoted: false,
   isBanned: false,
   spaceType: 'child',
   chatgptAccountId: '',
@@ -707,6 +706,7 @@ const loadAccounts = async () => {
       return {
         ...source,
         spaceType: source.spaceType || source.space_type || 'child',
+        spaceName: String(source.spaceName ?? source.space_name ?? '').trim(),
         spaceStatusCode,
         spaceStatusReason,
         spaceStatus: { code: spaceStatusCode, reason: spaceStatusReason },
@@ -823,7 +823,6 @@ const openEditDialog = (account: GptAccount) => {
     token: account.token,
     refreshToken: account.refreshToken || '',
     userCount: account.userCount,
-    isDemoted: Boolean(account.isDemoted),
     isBanned: Boolean(account.isBanned),
     spaceType: account.spaceType || 'child',
     chatgptAccountId: account.chatgptAccountId || '',
@@ -836,7 +835,7 @@ const openEditDialog = (account: GptAccount) => {
 const closeDialog = () => {
   showDialog.value = false
   editingAccount.value = null
-  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isDemoted: false, isBanned: false, spaceType: 'child', chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
+  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isBanned: false, spaceType: 'child', chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
   checkedChatgptAccounts.value = []
   checkAccessTokenError.value = ''
   checkingAccessToken.value = false
@@ -1486,9 +1485,9 @@ const handleInviteSubmit = async () => {
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">ID</th>
                 <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">排序</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">邮箱</th>
+                <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">空间名称</th>
                 <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">已加入</th>
                 <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">待加入</th>
-                <th class="px-6 py-5 text-center text-xs font-semibold text-gray-400 uppercase tracking-wider">降级</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">空间状态</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">过期时间</th>
                 <th class="px-6 py-5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">创建时间</th>
@@ -1521,6 +1520,9 @@ const handleInviteSubmit = async () => {
 	                    </span>
 	                  </div>
 	                </td>
+                <td class="px-6 py-5 text-sm text-gray-500">
+                  {{ account.spaceName || '-' }}
+                </td>
                 <td class="px-6 py-5 text-center">
                   <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-600 border border-blue-100">
                     {{ account.userCount }} 人
@@ -1529,14 +1531,6 @@ const handleInviteSubmit = async () => {
                 <td class="px-6 py-5 text-center">
                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-50 text-purple-600 border border-purple-100">
                     {{ account.inviteCount ?? 0 }} 人
-                  </span>
-                </td>
-                <td class="px-6 py-5 text-center">
-                  <span
-                    class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border"
-                    :class="account.isDemoted ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-gray-50 text-gray-500 border-gray-100'"
-                  >
-                    {{ account.isDemoted ? '已降级' : '未降级' }}
                   </span>
                 </td>
                 <td class="px-6 py-5">
@@ -1643,6 +1637,7 @@ const handleInviteSubmit = async () => {
                  </div>
                  <div>
                     <p class="text-sm font-bold break-all" :class="account.isBanned ? 'text-red-600' : 'text-gray-900'">{{ account.email }}</p>
+                    <p class="text-xs text-gray-500 mt-0.5">{{ account.spaceName || '-' }}</p>
                     <p class="text-xs text-blue-500 font-medium mt-0.5">#{{ account.id }}</p>
                  </div>
               </div>
@@ -1652,12 +1647,6 @@ const handleInviteSubmit = async () => {
                  </span>
                  <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-purple-50 text-purple-600 border border-purple-100">
                     {{ account.inviteCount ?? 0 }} 待
-                 </span>
-                 <span
-                   class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold border"
-                   :class="account.isDemoted ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-gray-50 text-gray-500 border-gray-100'"
-                 >
-                   {{ account.isDemoted ? '已降级' : '未降级' }}
                  </span>
                  <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold border" :class="resolveStatusBadgeClass(account)">{{ resolveAccountStatus(account).reason }}</span>
               </div>
@@ -2004,27 +1993,6 @@ const handleInviteSubmit = async () => {
                           @click="formData.spaceType = 'mother'"
                         >
                           母号空间
-                        </button>
-                      </div>
-                    </div>
-                    <div class="space-y-2">
-                      <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">降级状态</Label>
-                      <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
-                        <button
-                          type="button"
-                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
-                          :class="!formData.isDemoted ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-                          @click="formData.isDemoted = false"
-                        >
-                          未降级
-                        </button>
-                        <button
-                          type="button"
-                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
-                          :class="formData.isDemoted ? 'bg-amber-50 text-amber-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
-                          @click="formData.isDemoted = true"
-                        >
-                          已降级
                         </button>
                       </div>
                     </div>

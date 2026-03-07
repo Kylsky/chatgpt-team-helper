@@ -189,16 +189,14 @@ const formatCashAmount = (cashCents) => {
 }
 
 const SEAT_TYPE_UNDEMOTED = 'undemoted'
-const SEAT_TYPE_DEMOTED = 'demoted'
-const SEAT_TYPE_SET = new Set([SEAT_TYPE_UNDEMOTED, SEAT_TYPE_DEMOTED])
+const SEAT_TYPE_SET = new Set([SEAT_TYPE_UNDEMOTED])
 const normalizeSeatType = (value) => {
   const normalized = String(value || '').trim().toLowerCase()
   return SEAT_TYPE_SET.has(normalized) ? normalized : SEAT_TYPE_UNDEMOTED
 }
 
 const getTodayCommonCodeCount = (db, seatType) => {
-  const resolvedSeatType = normalizeSeatType(seatType)
-  const expectedDemoted = resolvedSeatType === SEAT_TYPE_DEMOTED ? 1 : 0
+  normalizeSeatType(seatType)
   const result = db.exec(
     `
       SELECT COUNT(*)
@@ -210,16 +208,13 @@ const getTodayCommonCodeCount = (db, seatType) => {
         AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-        AND COALESCE(ga.is_demoted, 0) = ?
     `
-    , [expectedDemoted]
   )
   return Number(result[0]?.values?.[0]?.[0] || 0)
 }
 
 const pickTodayCommonCode = (db, seatType) => {
-  const resolvedSeatType = normalizeSeatType(seatType)
-  const expectedDemoted = resolvedSeatType === SEAT_TYPE_DEMOTED ? 1 : 0
+  normalizeSeatType(seatType)
   const row = db.exec(
     `
       SELECT rc.code
@@ -231,11 +226,9 @@ const pickTodayCommonCode = (db, seatType) => {
         AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-        AND COALESCE(ga.is_demoted, 0) = ?
       ORDER BY rc.created_at ASC
       LIMIT 1
     `
-    , [expectedDemoted]
   )[0]?.values?.[0]
 
   if (!row?.[0]) return ''
@@ -258,7 +251,7 @@ router.get('/points/meta', authenticateToken, async (req, res) => {
     const points = Number(userResult[0].values[0][0] || 0)
     const remainingByType = {
       [SEAT_TYPE_UNDEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_UNDEMOTED),
-      [SEAT_TYPE_DEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_DEMOTED),
+      demoted: 0,
     }
     const withdrawSettings = await getPointsWithdrawSettings(db)
 
@@ -424,7 +417,7 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
 
       const remainingByType = {
         [SEAT_TYPE_UNDEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_UNDEMOTED),
-        [SEAT_TYPE_DEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_DEMOTED),
+        demoted: 0,
       }
       return { ok: true, redemption, points: pointsAfter, remainingByType }
     })

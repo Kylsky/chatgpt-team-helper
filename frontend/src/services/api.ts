@@ -275,6 +275,7 @@ export interface GptAccount {
   isDemoted?: boolean
   isBanned?: boolean
   spaceType?: 'mother' | 'child'
+  spaceName?: string
   chatgptAccountId?: string
   oaiDeviceId?: string
   expireAt?: string | null
@@ -291,7 +292,6 @@ export interface CreateGptAccountDto {
   token: string
   refreshToken?: string
   userCount?: number
-  isDemoted?: boolean
   isBanned?: boolean
   spaceType?: 'mother' | 'child'
   chatgptAccountId: string
@@ -708,7 +708,6 @@ export interface OpenAccountItem {
   pendingCount: number | null
   expireAt?: string | null
   remainingCodes: number
-  isDemoted: boolean
   orderType?: string
   creditCost?: string | null
 }
