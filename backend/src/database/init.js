@@ -783,6 +783,51 @@ const ensureGptAccountMembersTable = (database) => {
     changed = true
   }
 
+  try {
+    const tableInfo = database.exec('PRAGMA table_info(gpt_account_members)')
+    if (tableInfo.length > 0) {
+      const columns = new Set(tableInfo[0].values.map(row => row[1]))
+      if (!columns.has('account_id')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN account_id INTEGER')
+        changed = true
+      }
+      if (!columns.has('member_id')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN member_id TEXT')
+        changed = true
+      }
+      if (!columns.has('email')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN email TEXT')
+        changed = true
+      }
+      if (!columns.has('name')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN name TEXT')
+        changed = true
+      }
+      if (!columns.has('role')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN role TEXT')
+        changed = true
+      }
+      if (!columns.has('created_time')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN created_time TEXT')
+        changed = true
+      }
+      if (!columns.has('is_scim_managed')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN is_scim_managed INTEGER DEFAULT 0')
+        changed = true
+      }
+      if (!columns.has('synced_at')) {
+        database.run("ALTER TABLE gpt_account_members ADD COLUMN synced_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+        changed = true
+      }
+      if (!columns.has('updated_at')) {
+        database.run("ALTER TABLE gpt_account_members ADD COLUMN updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+        changed = true
+      }
+    }
+  } catch (error) {
+    console.warn('[DB] 无法检查成员缓存表字段:', error)
+  }
+
   database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_account ON gpt_account_members (account_id)')
   database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_email ON gpt_account_members (account_id, email)')
   database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_name ON gpt_account_members (account_id, name)')

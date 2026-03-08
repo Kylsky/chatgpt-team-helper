@@ -15,5 +15,6 @@ assert.match(routeSource, /LOWER\(email\) LIKE \? OR LOWER\(name\) LIKE \? OR LO
 
 assert.match(dbSource, /CREATE TABLE IF NOT EXISTS gpt_account_members/, '数据库应包含成员缓存表')
 assert.match(dbSource, /UNIQUE\(account_id, member_id\)/, '成员缓存表应包含账号+成员唯一约束')
+assert.match(dbSource, /ALTER TABLE gpt_account_members ADD COLUMN is_scim_managed INTEGER DEFAULT 0/, '老库升级应补齐 is_scim_managed 列')
 
 console.log('gpt-account-members-cache tests passed')
