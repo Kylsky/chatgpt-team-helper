@@ -123,6 +123,60 @@ async function fetchAccountById(db, accountId) {
   return mapRowToAccount(result[0].values[0])
 }
 
+const normalizeCachedMember = (accountId, item = {}) => {
+  const memberId = String(item.id || item.account_user_id || '').trim()
+  if (!memberId) return null
+  return {
+    accountId: Number(accountId),
+    memberId,
+    email: String(item.email || '').trim(),
+    name: String(item.name || '').trim(),
+    role: String(item.role || '').trim(),
+    createdTime: item.created_time ? String(item.created_time) : null,
+    isScimManaged: item.is_scim_managed ? 1 : 0,
+  }
+}
+
+const replaceAccountMembersCache = async (db, accountId, usersData = {}) => {
+  const normalizedAccountId = Number(accountId)
+  if (!Number.isFinite(normalizedAccountId) || normalizedAccountId <= 0) return
+
+  const items = Array.isArray(usersData?.items) ? usersData.items : []
+  const members = items
+    .map(item => normalizeCachedMember(normalizedAccountId, item))
+    .filter(Boolean)
+
+  db.run('DELETE FROM gpt_account_members WHERE account_id = ?', [normalizedAccountId])
+
+  for (const member of members) {
+    db.run(
+      `
+        INSERT INTO gpt_account_members (
+          account_id,
+          member_id,
+          email,
+          name,
+          role,
+          created_time,
+          is_scim_managed,
+          synced_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+      `,
+      [
+        member.accountId,
+        member.memberId,
+        member.email,
+        member.name,
+        member.role,
+        member.createdTime,
+        member.isScimManaged,
+      ]
+    )
+  }
+}
+
 const resolveErrorStatus = (error) => Number(error?.status || error?.statusCode || 0)
 
 const buildRefreshTokenRequestData = (refreshToken) => new URLSearchParams({
@@ -854,6 +908,7 @@ export async function syncAccountUserCount(accountId, options = {}) {
     `UPDATE gpt_accounts SET user_count = ?, space_name = CASE WHEN ? <> '' THEN ? ELSE space_name END, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
     [usersData.total, syncedSpaceName, syncedSpaceName, syncedAccount.id]
   )
+  await replaceAccountMembersCache(db, syncedAccount.id, usersData)
   await saveDatabase()
 
   const updatedAccount = await fetchAccountById(db, syncedAccount.id)
@@ -1029,6 +1084,7 @@ export async function deleteAccountUser(accountId, userId, options = {}) {
     `UPDATE gpt_accounts SET user_count = ?, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
     [usersData.total, syncedAccount.id]
   )
+  await replaceAccountMembersCache(db, syncedAccount.id, usersData)
   await saveDatabase()
 
   const updatedAccount = await fetchAccountById(db, syncedAccount.id)

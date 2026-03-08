@@ -759,6 +759,81 @@ const ensureOpenAccountSeatProtectionsTable = (database) => {
   return changed
 }
 
+const ensureGptAccountMembersTable = (database) => {
+  if (!database) return false
+  let changed = false
+
+  const tableExists = database.exec('SELECT name FROM sqlite_master WHERE type="table" AND name="gpt_account_members"')
+  if (tableExists.length === 0) {
+    database.run(`
+      CREATE TABLE IF NOT EXISTS gpt_account_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        member_id TEXT NOT NULL,
+        email TEXT,
+        name TEXT,
+        role TEXT,
+        created_time TEXT,
+        is_scim_managed INTEGER DEFAULT 0,
+        synced_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+        updated_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+        UNIQUE(account_id, member_id)
+      )
+    `)
+    changed = true
+  }
+
+  try {
+    const tableInfo = database.exec('PRAGMA table_info(gpt_account_members)')
+    if (tableInfo.length > 0) {
+      const columns = new Set(tableInfo[0].values.map(row => row[1]))
+      if (!columns.has('account_id')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN account_id INTEGER')
+        changed = true
+      }
+      if (!columns.has('member_id')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN member_id TEXT')
+        changed = true
+      }
+      if (!columns.has('email')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN email TEXT')
+        changed = true
+      }
+      if (!columns.has('name')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN name TEXT')
+        changed = true
+      }
+      if (!columns.has('role')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN role TEXT')
+        changed = true
+      }
+      if (!columns.has('created_time')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN created_time TEXT')
+        changed = true
+      }
+      if (!columns.has('is_scim_managed')) {
+        database.run('ALTER TABLE gpt_account_members ADD COLUMN is_scim_managed INTEGER DEFAULT 0')
+        changed = true
+      }
+      if (!columns.has('synced_at')) {
+        database.run("ALTER TABLE gpt_account_members ADD COLUMN synced_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+        changed = true
+      }
+      if (!columns.has('updated_at')) {
+        database.run("ALTER TABLE gpt_account_members ADD COLUMN updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+        changed = true
+      }
+    }
+  } catch (error) {
+    console.warn('[DB] 无法检查成员缓存表字段:', error)
+  }
+
+  database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_account ON gpt_account_members (account_id)')
+  database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_email ON gpt_account_members (account_id, email)')
+  database.run('CREATE INDEX IF NOT EXISTS idx_gpt_account_members_name ON gpt_account_members (account_id, name)')
+  return changed
+}
+
 const ensureXhsTables = (database) => {
   if (!database) return false
   let changed = false
@@ -1951,6 +2026,7 @@ export async function initDatabase() {
 
   const waitingRoomInitialized = ensureWaitingRoomTable(database)
   const openAccountSeatProtectionsInitialized = ensureOpenAccountSeatProtectionsTable(database)
+  const gptAccountMembersInitialized = ensureGptAccountMembersTable(database)
   const xhsTablesInitialized = ensureXhsTables(database)
   const xianyuTablesInitialized = ensureXianyuTables(database)
   const linuxDoUsersInitialized = ensureLinuxDoUsersTable(database)
@@ -1960,7 +2036,7 @@ export async function initDatabase() {
   const pointsWithdrawalsInitialized = ensurePointsWithdrawalsTable(database)
   const pointsLedgerInitialized = ensurePointsLedgerTable(database)
   const accountExceptionHistoryInitialized = ensureAccountExceptionHistoryTable(database)
-  if (waitingRoomInitialized || openAccountSeatProtectionsInitialized || xhsTablesInitialized || xianyuTablesInitialized || linuxDoUsersInitialized || accountRecoveryInitialized || purchaseOrdersInitialized || creditOrdersInitialized || pointsWithdrawalsInitialized || pointsLedgerInitialized || accountExceptionHistoryInitialized) {
+  if (waitingRoomInitialized || openAccountSeatProtectionsInitialized || gptAccountMembersInitialized || xhsTablesInitialized || xianyuTablesInitialized || linuxDoUsersInitialized || accountRecoveryInitialized || purchaseOrdersInitialized || creditOrdersInitialized || pointsWithdrawalsInitialized || pointsLedgerInitialized || accountExceptionHistoryInitialized) {
     saveDatabase()
   }
 
