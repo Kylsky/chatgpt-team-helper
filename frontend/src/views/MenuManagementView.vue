@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { adminService, type RbacMenu } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -28,6 +28,7 @@ type MenuNode = {
 
 const { success: showSuccess, error: showError } = useToast()
 
+const teleportReady = ref(false)
 const loading = ref(false)
 const menus = ref<RbacMenu[]>([])
 
@@ -101,7 +102,15 @@ const loadMenus = async () => {
   }
 }
 
-onMounted(loadMenus)
+onMounted(async () => {
+  await nextTick()
+  teleportReady.value = !!document.getElementById('header-actions')
+  await loadMenus()
+})
+
+onUnmounted(() => {
+  teleportReady.value = false
+})
 
 const createDialogOpen = ref(false)
 const createSaving = ref(false)
@@ -242,21 +251,31 @@ const deleteMenu = async (node: MenuNode) => {
 
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between gap-3">
-      <div>
-        <h3 class="text-xl font-semibold text-gray-900">菜单管理</h3>
-        <p class="text-sm text-gray-500 mt-1">管理系统菜单（支持一级/二级、相对路径、软删除）</p>
-      </div>
-      <div class="flex items-center gap-2">
-        <Button variant="outline" class="h-9" :disabled="loading" @click="loadMenus">
-          <RefreshCw class="w-4 h-4 mr-2" />
-          刷新
+    <Teleport v-if="teleportReady" to="#header-actions">
+      <div class="flex items-center gap-3 flex-wrap justify-end">
+        <Button
+          variant="outline"
+          class="bg-white border-gray-200 text-gray-700 hover:bg-gray-50 h-10 rounded-xl px-4"
+          :disabled="loading"
+          @click="loadMenus"
+        >
+          <RefreshCw class="h-4 w-4 mr-2" :class="loading ? 'animate-spin' : ''" />
+          刷新列表
         </Button>
-        <Button class="h-9" :disabled="loading" @click="openCreateDialog()">
+        <Button
+          class="bg-black hover:bg-gray-800 text-white rounded-xl px-5 h-10 shadow-lg shadow-black/10"
+          :disabled="loading"
+          @click="openCreateDialog()"
+        >
           <Plus class="w-4 h-4 mr-2" />
           新增一级菜单
         </Button>
       </div>
+    </Teleport>
+
+    <div>
+      <h3 class="text-xl font-semibold text-gray-900">菜单管理</h3>
+      <p class="text-sm text-gray-500 mt-1">管理系统菜单（支持一级/二级、相对路径、软删除）</p>
     </div>
 
     <div class="bg-white/70 border border-white/60 rounded-2xl shadow-sm overflow-hidden">

@@ -37,8 +37,12 @@
         <div class="p-8 sm:p-10 space-y-8">
           <div class="space-y-2">
             <p class="text-[13px] font-semibold text-[#86868b] uppercase tracking-wider">订单类型</p>
-            <div class="grid grid-cols-2 gap-3">
+            <div
+              class="grid gap-3"
+              :class="warrantyPlan && noWarrantyPlan ? 'grid-cols-2' : 'grid-cols-1'"
+            >
               <button
+                v-if="warrantyPlan"
                 type="button"
                 class="rounded-2xl border backdrop-blur px-4 py-3 text-left text-[14px] font-medium transition"
                 :class="orderType === 'warranty'
@@ -54,6 +58,7 @@
                 <p class="mt-1 text-[12px] text-[#86868b]">支持退款 / 补号</p>
               </button>
               <button
+                v-if="noWarrantyPlan"
                 type="button"
                 class="rounded-2xl border backdrop-blur px-4 py-3 text-left text-[14px] font-medium transition"
                 :class="orderType === 'no_warranty'
@@ -250,7 +255,6 @@ const normalizeOrderTypeFromQuery = (value: unknown): PurchaseOrderType | null =
   const normalized = String(raw ?? '').trim().toLowerCase()
   if (normalized === 'warranty') return 'warranty'
   if (normalized === 'no_warranty' || normalized === 'no-warranty' || normalized === 'nowarranty') return 'no_warranty'
-  if (normalized === 'anti_ban' || normalized === 'anti-ban' || normalized === 'antiban') return 'anti_ban'
   return null
 }
 
@@ -274,15 +278,15 @@ const currentPlan = computed<PurchasePlan | null>(() => {
   if (!plans.value.length) return null
   const firstPlan = plans.value[0]
   if (!firstPlan) return null
-  return plans.value.find(plan => plan.key === orderType.value) || firstPlan
+  return plans.value.find(plan => plan.orderType === orderType.value) || firstPlan
 })
 
 const warrantyPlan = computed<PurchasePlan | null>(
-  () => plans.value.find(plan => plan.key === 'warranty') || null
+  () => plans.value.find(plan => plan.orderType === 'warranty') || null
 )
 
 const noWarrantyPlan = computed<PurchasePlan | null>(
-  () => plans.value.find(plan => plan.key === 'no_warranty') || null
+  () => plans.value.find(plan => plan.orderType === 'no_warranty') || null
 )
 
 const currentAvailableCount = computed(() => (
@@ -321,10 +325,12 @@ const loadMeta = async () => {
   try {
     meta.value = await purchaseService.getMeta()
     if (meta.value?.plans?.length) {
-      const hasSelected = meta.value.plans.some(plan => plan.key === orderType.value)
+      const hasSelected = meta.value.plans.some(plan => plan.orderType === orderType.value)
       if (!hasSelected) {
         const firstPlan = meta.value.plans[0]
-        if (firstPlan) orderType.value = firstPlan.key
+        if (firstPlan?.orderType) {
+          orderType.value = firstPlan.orderType
+        }
       }
     }
   } catch (error: any) {
@@ -381,10 +387,15 @@ const handleCreateOrder = async () => {
 
   creating.value = true
   try {
+    if (!currentPlan.value?.key) {
+      errorMessage.value = '商品信息缺失，请刷新页面重试'
+      return
+    }
     orderEmail.value = normalizedEmail
     order.value = await purchaseService.createOrder({
       email: normalizedEmail,
       type: payType.value,
+      productKey: currentPlan.value.key,
       orderType: orderType.value
     })
     await refreshOrder()

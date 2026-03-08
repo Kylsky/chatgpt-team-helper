@@ -123,6 +123,23 @@ router.get('/overview', async (req, res) => {
           AND DATE(created_at) = DATE('now', 'localtime')
       `
     )
+    const commonCodesTodayTotal = scalar(
+      `
+        SELECT COUNT(*)
+        FROM redemption_codes
+        WHERE COALESCE(NULLIF(TRIM(channel), ''), 'common') = 'common'
+          AND DATE(created_at) = DATE('now', 'localtime')
+      `
+    )
+    const commonCodesTodayUnused = scalar(
+      `
+        SELECT COUNT(*)
+        FROM redemption_codes
+        WHERE COALESCE(NULLIF(TRIM(channel), ''), 'common') = 'common'
+          AND COALESCE(is_redeemed, 0) = 0
+          AND DATE(created_at) = DATE('now', 'localtime')
+      `
+    )
 
     const codesByChannelResult = db.exec(
       `
@@ -148,7 +165,7 @@ router.get('/overview', async (req, res) => {
       `
         SELECT COUNT(*)
         FROM xhs_orders
-        WHERE DATE(created_at) = DATE('now', 'localtime')
+        WHERE DATE(REPLACE(COALESCE(NULLIF(TRIM(order_time), ''), created_at), '/', '-')) = DATE('now', 'localtime')
       `
     )
 	    const xhsOrdersTodayUsed = scalar(
@@ -156,7 +173,7 @@ router.get('/overview', async (req, res) => {
 	        SELECT COUNT(*)
 	        FROM xhs_orders
 	        WHERE COALESCE(is_used, 0) = 1
-	          AND DATE(created_at) = DATE('now', 'localtime')
+	          AND DATE(REPLACE(COALESCE(NULLIF(TRIM(order_time), ''), created_at), '/', '-')) = DATE('now', 'localtime')
 	      `
 	    )
 	    const xhsOrdersTodayPending = Math.max(0, xhsOrdersTodayTotal - xhsOrdersTodayUsed)
@@ -165,7 +182,7 @@ router.get('/overview', async (req, res) => {
 	        SELECT COALESCE(SUM(COALESCE(actual_paid, 0)), 0)
 	        FROM xhs_orders
 	        WHERE COALESCE(order_status, '') != '已关闭'
-	          AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+	          AND DATE(REPLACE(COALESCE(NULLIF(TRIM(order_time), ''), created_at), '/', '-')) BETWEEN DATE(?) AND DATE(?)
 	      `,
 	      [from, to]
 	    )
@@ -174,7 +191,7 @@ router.get('/overview', async (req, res) => {
 	        SELECT COALESCE(SUM(COALESCE(actual_paid, 0)), 0)
 	        FROM xhs_orders
 	        WHERE COALESCE(order_status, '') != '已关闭'
-	          AND DATE(created_at) = DATE('now', 'localtime')
+	          AND DATE(REPLACE(COALESCE(NULLIF(TRIM(order_time), ''), created_at), '/', '-')) = DATE('now', 'localtime')
 	      `
 	    )
 
@@ -248,6 +265,33 @@ router.get('/overview', async (req, res) => {
       [from, to]
     )
 
+    const purchaseOrdersTodayTotal = scalar(
+      `SELECT COUNT(*) FROM purchase_orders WHERE DATE(created_at) = DATE('now', 'localtime')`
+    )
+    const purchaseOrdersTodayPaid = scalar(
+      `SELECT COUNT(*) FROM purchase_orders WHERE status = 'paid' AND DATE(created_at) = DATE('now', 'localtime')`
+    )
+    const purchaseOrdersTodayPending = scalar(
+      `SELECT COUNT(*) FROM purchase_orders WHERE status IN ('created', 'pending_payment') AND DATE(created_at) = DATE('now', 'localtime')`
+    )
+    const purchaseOrdersTodayRefunded = scalar(
+      `SELECT COUNT(*) FROM purchase_orders WHERE status = 'refunded' AND DATE(created_at) = DATE('now', 'localtime')`
+    )
+    const purchaseOrdersTodayPaidAmount = sumAmount(
+      `
+        SELECT COALESCE(SUM(CASE WHEN status = 'paid' THEN CAST(amount AS REAL) ELSE 0 END), 0)
+        FROM purchase_orders
+        WHERE DATE(created_at) = DATE('now', 'localtime')
+      `
+    )
+    const purchaseOrdersTodayRefundAmount = sumAmount(
+      `
+        SELECT COALESCE(SUM(CASE WHEN status = 'refunded' THEN CAST(COALESCE(refund_amount, amount) AS REAL) ELSE 0 END), 0)
+        FROM purchase_orders
+        WHERE DATE(created_at) = DATE('now', 'localtime')
+      `
+    )
+
     const creditOrdersTotal = scalar(
       `SELECT COUNT(*) FROM credit_orders WHERE DATE(created_at) BETWEEN DATE(?) AND DATE(?)`,
       [from, to]
@@ -299,6 +343,10 @@ router.get('/overview', async (req, res) => {
         total: codesTotal,
         unused: codesUnused,
         byChannel: codesByChannel,
+        todayCommon: {
+          total: commonCodesTodayTotal,
+          unused: commonCodesTodayUnused,
+        },
         todayXhs: {
           total: xhsCodesTodayTotal,
           unused: xhsCodesTodayUnused,
@@ -343,6 +391,14 @@ router.get('/overview', async (req, res) => {
         refunded: purchaseOrdersRefunded,
         paidAmount: purchaseOrdersPaidAmount,
         refundAmount: purchaseOrdersRefundAmount,
+        today: {
+          total: purchaseOrdersTodayTotal,
+          paid: purchaseOrdersTodayPaid,
+          pending: purchaseOrdersTodayPending,
+          refunded: purchaseOrdersTodayRefunded,
+          paidAmount: purchaseOrdersTodayPaidAmount,
+          refundAmount: purchaseOrdersTodayRefundAmount,
+        }
       },
       creditOrders: {
         total: creditOrdersTotal,

@@ -129,6 +129,7 @@ initDatabase()
 // Routes
 app.use('/api/auth', authRoutes)
 app.use('/api/user', userRoutes)
+app.use('/api/announcements', announcementsRoutes)
 app.use('/api/gpt-accounts', gptAccountsRoutes)
 app.use('/api/auto-boarding', autoBoardingRoutes)
 app.use('/api/redemption-codes', redemptionCodesRoutes)

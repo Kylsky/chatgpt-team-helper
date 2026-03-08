@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { formatProxyForLog, loadProxyList, parseProxyConfig } from '../utils/proxy.js'
+import { formatProxyForLog, loadProxyList, parseProxyConfig, pickProxyByHash } from '../utils/proxy.js'
 
 const OAI_CLIENT_VERSION = 'prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72'
 const DEFAULT_TIMEOUT_MS = 60000
@@ -79,18 +79,12 @@ async function getSocksAgent(proxyUrl) {
 }
 
 const loadInviteProxyList = () => {
-  const overrides = loadProxyList({ urlsEnvKey: 'CHATGPT_INVITE_PROXY_URLS', fileEnvKey: 'CHATGPT_INVITE_PROXY_FILE' })
-  if (overrides.length) return overrides
   return loadProxyList()
 }
 
-let proxyCursor = 0
-const pickProxySequence = (proxies = []) => {
-  if (!proxies.length) {
-    return () => null
-  }
-  const start = proxyCursor++
-  return (attemptIndex) => proxies[(start + Math.max(0, attemptIndex - 1)) % proxies.length] || null
+const pickProxySequence = (proxies = [], key) => {
+  if (!proxies.length) return () => null
+  return (attemptIndex) => pickProxyByHash(proxies, key, { attempt: attemptIndex }) || null
 }
 
 const buildProxyConfigFromUrl = (proxyUrl) => {
@@ -107,11 +101,12 @@ export async function inviteUserToChatGPTTeam(email, accountData, options = {}) 
   const baseDelayMs = clampDelay(toInt(options.baseDelayMs, toInt(process.env.CHATGPT_INVITE_RETRY_BASE_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS)), { min: 0 })
   const maxDelayMs = clampDelay(toInt(options.maxDelayMs, toInt(process.env.CHATGPT_INVITE_RETRY_MAX_DELAY_MS, DEFAULT_RETRY_MAX_DELAY_MS)), { min: baseDelayMs })
 
+  const { token, chatgpt_account_id: chatgptAccountId, oai_device_id: oaiDeviceId } = accountData || {}
+
   const proxyOverrides = options.proxy ? [buildProxyConfigFromUrl(options.proxy)].filter(Boolean) : []
   const proxies = proxyOverrides.length ? proxyOverrides : loadInviteProxyList()
-  const pickProxy = pickProxySequence(proxies)
-
-  const { token, chatgpt_account_id: chatgptAccountId, oai_device_id: oaiDeviceId } = accountData || {}
+  const proxyKey = options.proxyKey ?? chatgptAccountId ?? ''
+  const pickProxy = pickProxySequence(proxies, proxyKey)
 
   if (!token || !chatgptAccountId) {
     console.error('账号缺少必要的认证信息：token 或 chatgptAccountId')

@@ -1,5 +1,5 @@
-import { computed, ref } from 'vue'
-import { redemptionCodeService, type RedemptionChannel } from '@/services/api'
+import { computed, ref, unref, type Ref } from 'vue'
+import { redemptionCodeService } from '@/services/api'
 import { EMAIL_REGEX } from '@/lib/validation'
 
 export interface RedeemSuccessInfo {
@@ -8,8 +8,13 @@ export interface RedeemSuccessInfo {
   inviteStatus?: string
 }
 
-export const useRedeemForm = (channel: RedemptionChannel = 'common') => {
-  const redeemChannel = channel
+type MaybeRef<T> = T | Ref<T>
+
+export const useRedeemForm = (channel: MaybeRef<string> = 'common') => {
+  const redeemChannel = computed(() => {
+    const raw = String(unref(channel) ?? '').trim().toLowerCase()
+    return raw || 'common'
+  })
   const formData = ref({
     email: '',
     code: '',
@@ -91,7 +96,7 @@ export const useRedeemForm = (channel: RedemptionChannel = 'common') => {
       const payload: Record<string, any> = {
         email: normalizedEmail,
         code: formData.value.code.trim(),
-        channel: redeemChannel,
+        channel: redeemChannel.value,
       }
 
       if (options?.extraData) {
@@ -106,7 +111,7 @@ export const useRedeemForm = (channel: RedemptionChannel = 'common') => {
       })
 
       const response = await redemptionCodeService.redeem(
-        payload as { email: string; code: string; channel?: RedemptionChannel; redeemerUid?: string },
+        payload as { email: string; code: string; channel?: string; redeemerUid?: string },
         options?.linuxDoSessionToken ? { linuxDoSessionToken: options.linuxDoSessionToken } : undefined
       )
 

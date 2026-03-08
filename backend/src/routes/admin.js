@@ -20,8 +20,21 @@ import { getZpaySettings, getZpaySettingsFromEnv, invalidateZpaySettingsCache } 
 import { getTurnstileSettings, getTurnstileSettingsFromEnv, invalidateTurnstileSettingsCache } from '../utils/turnstile-settings.js'
 import { getTelegramSettings, getTelegramSettingsFromEnv, invalidateTelegramSettingsCache } from '../utils/telegram-settings.js'
 import { getFeatureFlags, invalidateFeatureFlagsCache } from '../utils/feature-flags.js'
+import { CHANNEL_KEY_REGEX, getChannelByKey, getChannels, invalidateChannelsCache, normalizeChannelKey } from '../utils/channels.js'
+import { getAccountRecoverySettings, invalidateAccountRecoverySettingsCache } from '../utils/account-recovery-settings.js'
+import {
+  PRODUCT_KEY_REGEX,
+  getPurchaseProductByKey,
+  listPurchaseProducts,
+  normalizeCodeChannels,
+  normalizeOrderType as normalizePurchaseProductOrderType,
+  normalizeProductKey,
+  disablePurchaseProduct,
+  upsertPurchaseProduct,
+} from '../services/purchase-products.js'
 import { withLocks } from '../utils/locks.js'
 import { redeemCodeInternal } from './redemption-codes.js'
+import { resolveOrderDeadlineMs, selectRecoveryCode } from '../services/account-recovery.js'
 
 const router = express.Router()
 
@@ -116,6 +129,65 @@ const normalizeSiteNoticeText = (value) => {
 }
 
 const ACCOUNT_RECOVERY_WINDOW_DAYS = Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_WINDOW_DAYS, 30))
+const ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS = Math.min(
+  10,
+  Math.max(1, toInt(process.env.ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS, 3))
+)
+
+const shouldRetryAccountRecoveryRedeem = (error) => {
+  const statusCode = Number(error?.statusCode ?? error?.status)
+  const message = String(error?.message || '').trim().toLowerCase()
+
+  if (message.includes('已被使用')) return true
+  if (message.includes('不存在') || message.includes('已失效')) return true
+
+  if (statusCode === 503) {
+    if (message.includes('人数上限')) return true
+    if (message.includes('不可用') || message.includes('过期')) return true
+    if (message.includes('暂无可用')) return true
+  }
+
+  return false
+}
+
+const ACCOUNT_RECOVERY_SOURCES = ['payment', 'credit', 'xianyu', 'xhs', 'manual']
+const ACCOUNT_RECOVERY_SOURCE_SET = new Set(ACCOUNT_RECOVERY_SOURCES)
+const normalizeAccountRecoverySources = (raw) => {
+  if (raw === undefined || raw === null) return null
+
+  const values = Array.isArray(raw) ? raw : String(raw).split(',')
+  const normalized = []
+  for (const value of values) {
+    const item = String(value ?? '').trim().toLowerCase()
+    if (!item) continue
+    if (!ACCOUNT_RECOVERY_SOURCE_SET.has(item)) continue
+    normalized.push(item)
+  }
+
+  const unique = Array.from(new Set(normalized))
+  // No-op filter: treat as "all sources" to preserve legacy behavior.
+  if (unique.length === ACCOUNT_RECOVERY_SOURCES.length && ACCOUNT_RECOVERY_SOURCES.every(source => unique.includes(source))) {
+    return null
+  }
+  return unique
+}
+
+const parseBoolean = (value, fallback) => {
+  if (value === undefined || value === null) return fallback
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  const raw = String(value).trim().toLowerCase()
+  if (!raw) return fallback
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false
+  return fallback
+}
+
+const normalizeMoney2 = (value) => {
+  const parsed = Number.parseFloat(String(value ?? '').trim())
+  if (!Number.isFinite(parsed) || parsed <= 0) return ''
+  return (Math.round(parsed * 100) / 100).toFixed(2)
+}
 
 const recordAccountRecovery = (db, payload) => {
   if (!db || !payload) return
@@ -1877,182 +1949,252 @@ router.delete('/rbac/users/:id', async (req, res) => {
   }
 })
 
-// 封号账号补录管理
-router.get('/account-recovery/banned-accounts', async (req, res) => {
-  try {
-    const page = Math.max(1, Number(req.query.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10))
-    const search = String(req.query.search || '').trim().toLowerCase()
-    const days = Math.max(1, Math.min(90, toInt(req.query.days, ACCOUNT_RECOVERY_WINDOW_DAYS)))
-    const threshold = `-${days} days`
+	// 封号账号补录管理
+	router.get('/account-recovery/banned-accounts', async (req, res) => {
+	  try {
+	    const page = Math.max(1, Number(req.query.page) || 1)
+	    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10))
+	    const search = String(req.query.search || '').trim().toLowerCase()
+	    const days = Math.max(1, Math.min(90, toInt(req.query.days, ACCOUNT_RECOVERY_WINDOW_DAYS)))
+	    const threshold = `-${days} days`
 
-    const db = await getDatabase()
+	    const db = await getDatabase()
+	    const pendingOnly = parseBool(req.query.pendingOnly, false)
+	    const sources = normalizeAccountRecoverySources(req.query.sources)
+	    const sourceFilterClause =
+	      sources === null
+	        ? ''
+	        : sources.length
+	          ? `AND source IN (${sources.map(() => '?').join(', ')})`
+	          : 'AND 1=0'
+	    const sourceFilterParams = sources === null ? [] : sources
 
-    // Always show banned accounts (unprocessed), even when no eligible codes exist in the window.
-    const accountConditions = [
-      'ga.is_banned = 1',
-      'COALESCE(ga.ban_processed, 0) = 0',
-    ]
-    const countParams = []
+	    // Always show banned accounts (unprocessed), even when no eligible codes exist in the window.
+	    const accountConditions = [
+	      'ga.is_banned = 1',
+	      'COALESCE(ga.ban_processed, 0) = 0',
+	    ]
+	    const accountParams = []
 
-    if (search) {
-      accountConditions.push('LOWER(ga.email) LIKE ?')
-      countParams.push(`%${search}%`)
-    }
+	    if (search) {
+	      accountConditions.push('LOWER(ga.email) LIKE ?')
+	      accountParams.push(`%${search}%`)
+	    }
 
-    const whereAccounts = accountConditions.length ? `WHERE ${accountConditions.join(' AND ')}` : ''
+	    const whereAccounts = accountConditions.length ? `WHERE ${accountConditions.join(' AND ')}` : ''
+	    const dataConditions = [...accountConditions]
+	    if (pendingOnly) {
+	      dataConditions.push('(COALESCE(ea.pending_count, 0) + COALESCE(ea.failed_count, 0)) > 0')
+	    }
+	    if (sources !== null) {
+	      // When the user selects specific sources, hide accounts that have no impacted codes in those sources.
+	      dataConditions.push('COALESCE(ea.impacted_total, 0) > 0')
+	    }
+	    const whereAccountsFiltered = dataConditions.length ? `WHERE ${dataConditions.join(' AND ')}` : ''
 
-    const countResult = db.exec(
-      `
-        SELECT COUNT(*)
-        FROM gpt_accounts ga
-        ${whereAccounts}
-      `,
-      countParams
-    )
-    const total = Number(countResult[0]?.values?.[0]?.[0] || 0)
-    const offset = (page - 1) * pageSize
-
-	    const dataResult = db.exec(
-	      `
-	        WITH log_flags AS (
-	          SELECT
-	            original_code_id,
-	            COUNT(*) AS attempts,
-	            MAX(id) AS latest_id
-	          FROM account_recovery_logs
-	          GROUP BY original_code_id
-	        ),
-	        log_latest AS (
-	          SELECT
-	            ar.original_code_id,
-	            ar.status
-	          FROM account_recovery_logs ar
-	          JOIN log_flags lf ON lf.latest_id = ar.id
-	        ),
-	        completed_flags AS (
-	          SELECT
-	            original_code_id,
-	            MAX(id) AS latest_completed_id
-	          FROM account_recovery_logs
-	          WHERE status IN ('success', 'skipped')
-	          GROUP BY original_code_id
-	        ),
-	        completed_latest AS (
-	          SELECT
-	            ar.original_code_id,
-	            ar.recovery_account_email
-	          FROM account_recovery_logs ar
-	          JOIN completed_flags cf ON cf.latest_completed_id = ar.id
-	        ),
-	        eligible_codes AS (
-	          SELECT
-	            ga.id AS account_id,
-	            rc.id AS original_code_id,
-	            rc.redeemed_at AS redeemed_at,
-	            rc.account_email AS original_account_email
-	          FROM gpt_accounts ga
-	          JOIN redemption_codes rc ON lower(rc.account_email) = lower(ga.email)
-	          WHERE ga.is_banned = 1
-	            AND rc.is_redeemed = 1
-            AND rc.redeemed_at IS NOT NULL
-            AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
-	            AND (
-	              EXISTS (
+	    const bannedAccountsEligibilitySql = `
+	      WITH log_flags AS (
+	        SELECT
+	          original_code_id,
+	          COUNT(*) AS attempts,
+	          MAX(id) AS latest_id
+	        FROM account_recovery_logs
+	        GROUP BY original_code_id
+	      ),
+	      log_latest AS (
+	        SELECT
+	          ar.original_code_id,
+	          ar.status
+	        FROM account_recovery_logs ar
+	        JOIN log_flags lf ON lf.latest_id = ar.id
+	      ),
+	      completed_flags AS (
+	        SELECT
+	          original_code_id,
+	          MAX(id) AS latest_completed_id
+	        FROM account_recovery_logs
+	        WHERE status IN ('success', 'skipped')
+	        GROUP BY original_code_id
+	      ),
+	      completed_latest AS (
+	        SELECT
+	          ar.original_code_id,
+	          ar.recovery_account_email
+	        FROM account_recovery_logs ar
+	        JOIN completed_flags cf ON cf.latest_completed_id = ar.id
+	      ),
+	      eligible_codes AS (
+	        SELECT
+	          ga.id AS account_id,
+	          rc.id AS original_code_id,
+	          rc.redeemed_at AS redeemed_at,
+	          rc.account_email AS original_account_email,
+	          CASE
+	            WHEN EXISTS (
+	              SELECT 1
+	              FROM purchase_orders po
+	              WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+	                AND po.created_at >= DATETIME('now', 'localtime', ?)
+	                AND po.refunded_at IS NULL
+	                AND COALESCE(po.status, '') != 'refunded'
+	            ) THEN 'payment'
+	            WHEN EXISTS (
+	              SELECT 1
+	              FROM credit_orders co
+	              WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+	                AND co.created_at >= DATETIME('now', 'localtime', ?)
+	                AND co.refunded_at IS NULL
+	                AND COALESCE(co.status, '') != 'refunded'
+	            ) THEN 'credit'
+	            WHEN EXISTS (
+	              SELECT 1
+	              FROM xianyu_orders xo
+	              WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+	                AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+	            ) THEN 'xianyu'
+	            WHEN EXISTS (
+	              SELECT 1
+	              FROM xhs_orders xo
+	              WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+	                AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+	            ) THEN 'xhs'
+	            WHEN (
+	              rc.redeemed_by IS NOT NULL
+	              AND trim(rc.redeemed_by) != ''
+	              AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
+	              AND NOT EXISTS (
 	                SELECT 1
 	                FROM purchase_orders po
 	                WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
-	                  AND po.created_at >= DATETIME('now', 'localtime', ?)
-	                  AND po.refunded_at IS NULL
-	                  AND COALESCE(po.status, '') != 'refunded'
 	              )
-	              OR EXISTS (
+	              AND NOT EXISTS (
 	                SELECT 1
 	                FROM credit_orders co
 	                WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
-	                  AND co.created_at >= DATETIME('now', 'localtime', ?)
-	                  AND co.refunded_at IS NULL
-	                  AND COALESCE(co.status, '') != 'refunded'
 	              )
-	              OR EXISTS (
+	              AND NOT EXISTS (
 	                SELECT 1
 	                FROM xhs_orders xo
-                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-              )
-              OR EXISTS (
-                SELECT 1
-                FROM xianyu_orders xo
-                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-              )
-            )
-            AND COALESCE(
-              NULLIF((
-                SELECT po2.order_type
-                FROM purchase_orders po2
-                WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
-                ORDER BY po2.created_at DESC
-                LIMIT 1
-              ), ''),
-              NULLIF(rc.order_type, ''),
-	              'warranty'
-	            ) != 'no_warranty'
-	        ),
-	        eligible_enriched AS (
-	          SELECT
-	            ec.account_id,
-	            ec.original_code_id,
-	            ec.redeemed_at,
-	            COALESCE(lf.attempts, 0) AS attempts,
-	            ll.status AS latest_status,
-	            COALESCE(cl.recovery_account_email, ec.original_account_email) AS current_account_email
-	          FROM eligible_codes ec
-	          LEFT JOIN log_flags lf ON lf.original_code_id = ec.original_code_id
-	          LEFT JOIN log_latest ll ON ll.original_code_id = ec.original_code_id
-	          LEFT JOIN completed_latest cl ON cl.original_code_id = ec.original_code_id
-	        ),
-	        eligible_with_current AS (
-	          SELECT
-	            ee.account_id,
-	            ee.original_code_id,
-	            ee.redeemed_at,
-	            ee.attempts,
-	            ee.latest_status,
-	            CASE
-	              WHEN current_ga.id IS NULL THEN 1
-	              ELSE COALESCE(current_ga.is_banned, 0)
-	            END AS current_is_banned
-	          FROM eligible_enriched ee
-	          LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(ee.current_account_email)
-	        ),
-	        eligible_agg AS (
-	          SELECT
-	            account_id,
-	            COUNT(original_code_id) AS impacted_total,
-	            SUM(CASE WHEN current_is_banned = 0 THEN 1 ELSE 0 END) AS done_count,
-	            SUM(CASE WHEN current_is_banned = 1 AND latest_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-	            SUM(CASE WHEN current_is_banned = 1 AND (latest_status IS NULL OR latest_status != 'failed') THEN 1 ELSE 0 END) AS pending_count,
-	            MAX(redeemed_at) AS latest_redeemed_at
-	          FROM eligible_with_current
-	          GROUP BY account_id
-	        )
+	                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+	              )
+	              AND NOT EXISTS (
+	                SELECT 1
+	                FROM xianyu_orders xo
+	                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+	              )
+	            ) THEN 'manual'
+	            ELSE NULL
+	          END AS source
+	        FROM gpt_accounts ga
+	        JOIN redemption_codes rc ON lower(trim(rc.account_email)) = lower(trim(ga.email))
+	        WHERE ga.is_banned = 1
+	          AND rc.is_redeemed = 1
+	          AND rc.redeemed_at IS NOT NULL
+	          AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
+	          AND COALESCE(
+	            NULLIF((
+	              SELECT po2.order_type
+	              FROM purchase_orders po2
+	              WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+	              ORDER BY po2.created_at DESC
+	              LIMIT 1
+	            ), ''),
+	            NULLIF(rc.order_type, ''),
+	            'warranty'
+	          ) != 'no_warranty'
+	      ),
+	      eligible_filtered AS (
+	        SELECT *
+	        FROM eligible_codes
+	        WHERE source IS NOT NULL
+	        ${sourceFilterClause}
+	      ),
+	      eligible_enriched AS (
+	        SELECT
+	          ec.account_id,
+	          ec.original_code_id,
+	          ec.redeemed_at,
+	          COALESCE(lf.attempts, 0) AS attempts,
+	          ll.status AS latest_status,
+	          COALESCE(cl.recovery_account_email, ec.original_account_email) AS current_account_email
+	        FROM eligible_filtered ec
+	        LEFT JOIN log_flags lf ON lf.original_code_id = ec.original_code_id
+	        LEFT JOIN log_latest ll ON ll.original_code_id = ec.original_code_id
+	        LEFT JOIN completed_latest cl ON cl.original_code_id = ec.original_code_id
+	      ),
+	      eligible_with_current AS (
+	        SELECT
+	          ee.account_id,
+	          ee.original_code_id,
+	          ee.redeemed_at,
+	          ee.attempts,
+	          ee.latest_status,
+	          CASE
+	            WHEN current_ga.id IS NULL THEN 1
+	            ELSE COALESCE(current_ga.is_banned, 0)
+	          END AS current_is_banned
+	        FROM eligible_enriched ee
+		        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(ee.current_account_email))
+	      ),
+	      eligible_agg AS (
+	        SELECT
+	          account_id,
+	          COUNT(original_code_id) AS impacted_total,
+	          SUM(CASE WHEN current_is_banned = 0 THEN 1 ELSE 0 END) AS done_count,
+	          SUM(CASE WHEN current_is_banned = 1 AND latest_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+	          SUM(CASE WHEN current_is_banned = 1 AND (latest_status IS NULL OR latest_status != 'failed') THEN 1 ELSE 0 END) AS pending_count,
+	          MAX(redeemed_at) AS latest_redeemed_at
+	        FROM eligible_with_current
+	        GROUP BY account_id
+	      )
+	    `.trim()
+
+	    let total = 0
+	    const eligibilityParams = [threshold, threshold, threshold, threshold, threshold, ...sourceFilterParams, ...accountParams]
+	    if (pendingOnly || sources !== null) {
+	      const countResult = db.exec(
+	        `
+	          ${bannedAccountsEligibilitySql}
+	          SELECT COUNT(*)
+	          FROM gpt_accounts ga
+	          LEFT JOIN eligible_agg ea ON ea.account_id = ga.id
+	          ${whereAccountsFiltered}
+	        `,
+	        eligibilityParams
+	      )
+	      total = Number(countResult[0]?.values?.[0]?.[0] || 0)
+	    } else {
+	      const countResult = db.exec(
+	        `
+	          SELECT COUNT(*)
+	          FROM gpt_accounts ga
+	          ${whereAccounts}
+	        `,
+	        accountParams
+	      )
+	      total = Number(countResult[0]?.values?.[0]?.[0] || 0)
+	    }
+	    const offset = (page - 1) * pageSize
+
+	    const dataResult = db.exec(
+	      `
+	        ${bannedAccountsEligibilitySql}
 	        SELECT
 	          ga.id,
 	          ga.email,
-          COALESCE(ea.impacted_total, 0) AS impacted_total,
-          COALESCE(ea.done_count, 0) AS done_count,
-          COALESCE(ea.failed_count, 0) AS failed_count,
-          COALESCE(ea.pending_count, 0) AS pending_count,
-          ea.latest_redeemed_at
-        FROM gpt_accounts ga
-        LEFT JOIN eligible_agg ea ON ea.account_id = ga.id
-        ${whereAccounts}
-        ORDER BY latest_redeemed_at DESC
-        LIMIT ? OFFSET ?
-      `,
-      [threshold, threshold, threshold, threshold, threshold, ...countParams, pageSize, offset]
-    )
+	          COALESCE(ea.impacted_total, 0) AS impacted_total,
+	          COALESCE(ea.done_count, 0) AS done_count,
+	          COALESCE(ea.failed_count, 0) AS failed_count,
+	          COALESCE(ea.pending_count, 0) AS pending_count,
+	          ea.latest_redeemed_at
+	        FROM gpt_accounts ga
+	        LEFT JOIN eligible_agg ea ON ea.account_id = ga.id
+	        ${whereAccountsFiltered}
+	        ORDER BY latest_redeemed_at DESC
+	        LIMIT ? OFFSET ?
+	      `,
+	      [...eligibilityParams, pageSize, offset]
+	    )
 
     const accounts = (dataResult[0]?.values || []).map(row => ({
       id: Number(row[0]),
@@ -2074,6 +2216,67 @@ router.get('/account-recovery/banned-accounts', async (req, res) => {
     })
   } catch (error) {
     console.error('Get banned recovery accounts error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/account-recovery/banned-accounts/processed', async (req, res) => {
+  try {
+    const rawIds = req.body?.accountIds ?? req.body?.ids ?? req.body?.accountIdList
+    const accountIds = Array.isArray(rawIds)
+      ? [...new Set(rawIds.map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0))]
+      : []
+
+    if (!accountIds.length) {
+      return res.status(400).json({ error: 'Invalid accountIds' })
+    }
+
+    if (accountIds.length > 500) {
+      return res.status(400).json({ error: 'Too many accountIds' })
+    }
+
+    const raw = req.body?.processed ?? req.body?.value
+    const processed = typeof raw === 'boolean' ? raw : Number(raw ?? 1) !== 0
+
+    const db = await getDatabase()
+    const placeholders = accountIds.map(() => '?').join(', ')
+    const lookupResult = db.exec(
+      `
+        SELECT id, COALESCE(is_banned, 0) AS is_banned
+        FROM gpt_accounts
+        WHERE id IN (${placeholders})
+      `,
+      accountIds
+    )
+    const rows = lookupResult[0]?.values || []
+    const foundIdSet = new Set(rows.map(row => Number(row[0])))
+    const missingIds = accountIds.filter(id => !foundIdSet.has(id))
+    const notBannedIds = rows.filter(row => Number(row[1] || 0) !== 1).map(row => Number(row[0]))
+    const bannedIds = rows.filter(row => Number(row[1] || 0) === 1).map(row => Number(row[0]))
+
+    if (!bannedIds.length) {
+      return res.status(400).json({ error: 'No banned accounts to update' })
+    }
+
+    const updatePlaceholders = bannedIds.map(() => '?').join(', ')
+    db.run(
+      `
+        UPDATE gpt_accounts
+        SET ban_processed = ?, updated_at = DATETIME('now', 'localtime')
+        WHERE id IN (${updatePlaceholders})
+      `,
+      [processed ? 1 : 0, ...bannedIds]
+    )
+    saveDatabase()
+
+    return res.json({
+      requestedCount: accountIds.length,
+      updatedCount: bannedIds.length,
+      missingIds,
+      notBannedIds,
+    })
+  } catch (error) {
+    console.error('Batch update banned account processed error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -2151,66 +2354,24 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
     const status = String(req.query.status || 'pending').trim().toLowerCase()
     const days = Math.max(1, Math.min(90, toInt(req.query.days, ACCOUNT_RECOVERY_WINDOW_DAYS)))
     const threshold = `-${days} days`
+    const sources = normalizeAccountRecoverySources(req.query.sources)
+    const sourceFilterClause =
+      sources === null
+        ? ''
+        : sources.length
+          ? `AND source IN (${sources.map(() => '?').join(', ')})`
+          : 'AND 1=0'
+    const sourceFilterParams = sources === null ? [] : sources
 
     const db = await getDatabase()
 
     const conditions = [
       'ga.id = ?',
       'ga.is_banned = 1',
-      'rc.is_redeemed = 1',
-      'rc.redeemed_at IS NOT NULL',
-      `rc.redeemed_at >= DATETIME('now', 'localtime', ?)`,
-      `
-        (
-	          EXISTS (
-	            SELECT 1
-	            FROM purchase_orders po
-	            WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
-	              AND po.created_at >= DATETIME('now', 'localtime', ?)
-	              AND po.refunded_at IS NULL
-	              AND COALESCE(po.status, '') != 'refunded'
-	          )
-	          OR EXISTS (
-	            SELECT 1
-	            FROM credit_orders co
-	            WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
-	              AND co.created_at >= DATETIME('now', 'localtime', ?)
-	              AND co.refunded_at IS NULL
-	              AND COALESCE(co.status, '') != 'refunded'
-	          )
-	          OR EXISTS (
-	            SELECT 1
-	            FROM xhs_orders xo
-            WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-              AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM xianyu_orders xo
-            WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
-              AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
-          )
-        )
-      `.trim(),
-      `
-        COALESCE(
-          NULLIF((
-            SELECT po2.order_type
-            FROM purchase_orders po2
-            WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
-            ORDER BY po2.created_at DESC
-            LIMIT 1
-          ), ''),
-          NULLIF(rc.order_type, ''),
-          'warranty'
-        ) != 'no_warranty'
-      `.trim(),
     ]
-    const params = [accountId, threshold, threshold, threshold, threshold, threshold]
 
     if (search) {
       conditions.push('(LOWER(rc.code) LIKE ? OR LOWER(rc.redeemed_by) LIKE ?)')
-      params.push(`%${search}%`, `%${search}%`)
     }
 
     const currentBannedExpression = `
@@ -2231,6 +2392,12 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const accountParams = [accountId]
+    if (search) {
+      accountParams.push(`%${search}%`, `%${search}%`)
+    }
+    const eligibilityParams = [threshold, threshold, threshold, threshold, threshold, ...sourceFilterParams]
 
     const countResult = db.exec(
       `
@@ -2263,17 +2430,103 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
             ar.recovery_account_email
           FROM account_recovery_logs ar
           JOIN completed_flags cf ON cf.latest_completed_id = ar.id
+        ),
+        eligible_codes AS (
+          SELECT
+            rc.id,
+            rc.code,
+            rc.channel,
+            rc.redeemed_at,
+            rc.redeemed_by,
+            rc.account_email,
+            CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM purchase_orders po
+                WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                  AND po.created_at >= DATETIME('now', 'localtime', ?)
+                  AND po.refunded_at IS NULL
+                  AND COALESCE(po.status, '') != 'refunded'
+              ) THEN 'payment'
+              WHEN EXISTS (
+                SELECT 1
+                FROM credit_orders co
+                WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                  AND co.created_at >= DATETIME('now', 'localtime', ?)
+                  AND co.refunded_at IS NULL
+                  AND COALESCE(co.status, '') != 'refunded'
+              ) THEN 'credit'
+              WHEN EXISTS (
+                SELECT 1
+                FROM xianyu_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+              ) THEN 'xianyu'
+              WHEN EXISTS (
+                SELECT 1
+                FROM xhs_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+              ) THEN 'xhs'
+              WHEN (
+                rc.redeemed_by IS NOT NULL
+                AND trim(rc.redeemed_by) != ''
+                AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM purchase_orders po
+                  WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM credit_orders co
+                  WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM xhs_orders xo
+                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM xianyu_orders xo
+                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                )
+              ) THEN 'manual'
+              ELSE NULL
+            END AS source
+          FROM redemption_codes rc
+          WHERE rc.is_redeemed = 1
+            AND rc.redeemed_at IS NOT NULL
+            AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
+            AND COALESCE(
+              NULLIF((
+                SELECT po2.order_type
+                FROM purchase_orders po2
+                WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+                ORDER BY po2.created_at DESC
+                LIMIT 1
+              ), ''),
+              NULLIF(rc.order_type, ''),
+              'warranty'
+            ) != 'no_warranty'
+        ),
+        eligible_filtered AS (
+          SELECT *
+          FROM eligible_codes
+          WHERE source IS NOT NULL
+          ${sourceFilterClause}
         )
         SELECT COUNT(*)
-        FROM redemption_codes rc
-        JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+        FROM eligible_filtered rc
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
         LEFT JOIN log_flags lf ON lf.original_code_id = rc.id
         LEFT JOIN log_latest ll ON ll.original_code_id = rc.id
         LEFT JOIN completed_latest cl ON cl.original_code_id = rc.id
-        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email))
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email)))
         ${whereClause}
       `,
-      params
+      [...eligibilityParams, ...accountParams]
     )
     const total = Number(countResult[0]?.values?.[0]?.[0] || 0)
     const offset = (page - 1) * pageSize
@@ -2315,6 +2568,92 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
             ar.recovery_account_email
           FROM account_recovery_logs ar
           JOIN completed_flags cf ON cf.latest_completed_id = ar.id
+        ),
+        eligible_codes AS (
+          SELECT
+            rc.id,
+            rc.code,
+            rc.channel,
+            rc.redeemed_at,
+            rc.redeemed_by,
+            rc.account_email,
+            CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM purchase_orders po
+                WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                  AND po.created_at >= DATETIME('now', 'localtime', ?)
+                  AND po.refunded_at IS NULL
+                  AND COALESCE(po.status, '') != 'refunded'
+              ) THEN 'payment'
+              WHEN EXISTS (
+                SELECT 1
+                FROM credit_orders co
+                WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                  AND co.created_at >= DATETIME('now', 'localtime', ?)
+                  AND co.refunded_at IS NULL
+                  AND COALESCE(co.status, '') != 'refunded'
+              ) THEN 'credit'
+              WHEN EXISTS (
+                SELECT 1
+                FROM xianyu_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+              ) THEN 'xianyu'
+              WHEN EXISTS (
+                SELECT 1
+                FROM xhs_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+              ) THEN 'xhs'
+              WHEN (
+                rc.redeemed_by IS NOT NULL
+                AND trim(rc.redeemed_by) != ''
+                AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM purchase_orders po
+                  WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM credit_orders co
+                  WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM xhs_orders xo
+                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM xianyu_orders xo
+                  WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                )
+              ) THEN 'manual'
+              ELSE NULL
+            END AS source
+          FROM redemption_codes rc
+          WHERE rc.is_redeemed = 1
+            AND rc.redeemed_at IS NOT NULL
+            AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
+            AND COALESCE(
+              NULLIF((
+                SELECT po2.order_type
+                FROM purchase_orders po2
+                WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+                ORDER BY po2.created_at DESC
+                LIMIT 1
+              ), ''),
+              NULLIF(rc.order_type, ''),
+              'warranty'
+            ) != 'no_warranty'
+        ),
+        eligible_filtered AS (
+          SELECT *
+          FROM eligible_codes
+          WHERE source IS NOT NULL
+          ${sourceFilterClause}
         )
         SELECT
           rc.id,
@@ -2334,18 +2673,19 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
           ll.recovery_mode AS latest_recovery_mode,
           ll.recovery_code AS latest_recovery_code,
           ll.recovery_account_email AS latest_recovery_account_email,
-          ll.created_at AS latest_created_at
-        FROM redemption_codes rc
-        JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+          ll.created_at AS latest_created_at,
+          rc.source AS source
+        FROM eligible_filtered rc
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
         LEFT JOIN log_flags lf ON lf.original_code_id = rc.id
         LEFT JOIN log_latest ll ON ll.original_code_id = rc.id
         LEFT JOIN completed_latest cl ON cl.original_code_id = rc.id
-        LEFT JOIN gpt_accounts current_ga ON lower(current_ga.email) = lower(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email))
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), rc.account_email)))
         ${whereClause}
         ORDER BY rc.redeemed_at DESC
         LIMIT ? OFFSET ?
       `,
-      [...params, pageSize, offset]
+      [...eligibilityParams, ...accountParams, pageSize, offset]
     )
 
     const redeems = (dataResult[0]?.values || []).map(row => {
@@ -2360,6 +2700,7 @@ router.get('/account-recovery/banned-accounts/:accountId/redeems', async (req, r
         redeemedAt: row[3] ? String(row[3]) : null,
         userEmail: extractEmailFromRedeemedBy(row[4]),
         originalAccountEmail: String(row[5] || ''),
+        source: row[15] ? String(row[15]) : '',
         state,
         attempts,
         latest: row[8]
@@ -2443,6 +2784,248 @@ router.get('/account-recovery/logs', async (req, res) => {
   }
 })
 
+router.get('/account-recovery/one-click/preview', async (req, res) => {
+  try {
+    const source = String(req.query.source || '').trim().toLowerCase()
+    if (!ACCOUNT_RECOVERY_SOURCE_SET.has(source)) {
+      return res.status(400).json({ error: 'Invalid source' })
+    }
+
+    const days = Math.max(1, Math.min(90, toInt(req.query.days, ACCOUNT_RECOVERY_WINDOW_DAYS)))
+    const limit = Math.min(200, Math.max(1, toInt(req.query.limit, 200)))
+    const threshold = `-${days} days`
+
+    const db = await getDatabase()
+
+    // Best-effort inventory count (common channel only); actual recovery may still fail due to per-order expiry requirements.
+    const capacityLimit = 6
+    const availableResult = db.exec(
+      `
+        SELECT COUNT(*)
+        FROM redemption_codes rc
+        JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+        WHERE rc.is_redeemed = 0
+          AND rc.account_email IS NOT NULL
+          AND trim(rc.account_email) != ''
+          AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = 'common'
+          AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
+          AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
+          AND (rc.reserved_for_uid IS NULL OR rc.reserved_for_uid = '')
+          AND COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) < ?
+          AND COALESCE(ga.is_open, 0) = 1
+          AND COALESCE(ga.is_banned, 0) = 0
+          AND ga.token IS NOT NULL
+          AND trim(ga.token) != ''
+          AND ga.chatgpt_account_id IS NOT NULL
+          AND trim(ga.chatgpt_account_id) != ''
+          AND ga.expire_at IS NOT NULL
+          AND trim(ga.expire_at) != ''
+          AND DATETIME(REPLACE(ga.expire_at, '/', '-')) >= DATETIME('now', 'localtime')
+      `,
+      [capacityLimit]
+    )
+    const availableCount = Number(availableResult[0]?.values?.[0]?.[0] || 0)
+
+    const eligibilitySql = `
+      WITH log_flags AS (
+        SELECT
+          original_code_id,
+          COUNT(*) AS attempts,
+          MAX(id) AS latest_id
+        FROM account_recovery_logs
+        GROUP BY original_code_id
+      ),
+      log_latest AS (
+        SELECT
+          ar.original_code_id,
+          ar.status
+        FROM account_recovery_logs ar
+        JOIN log_flags lf ON lf.latest_id = ar.id
+      ),
+      completed_flags AS (
+        SELECT
+          original_code_id,
+          MAX(id) AS latest_completed_id
+        FROM account_recovery_logs
+        WHERE status IN ('success', 'skipped')
+        GROUP BY original_code_id
+      ),
+      completed_latest AS (
+        SELECT
+          ar.original_code_id,
+          ar.recovery_account_email
+        FROM account_recovery_logs ar
+        JOIN completed_flags cf ON cf.latest_completed_id = ar.id
+      ),
+      eligible_codes AS (
+        SELECT
+          ga.id AS account_id,
+          rc.id AS original_code_id,
+          rc.redeemed_at AS redeemed_at,
+          rc.account_email AS original_account_email,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM purchase_orders po
+              WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                AND po.created_at >= DATETIME('now', 'localtime', ?)
+                AND po.refunded_at IS NULL
+                AND COALESCE(po.status, '') != 'refunded'
+            ) THEN 'payment'
+            WHEN EXISTS (
+              SELECT 1
+              FROM credit_orders co
+              WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                AND co.created_at >= DATETIME('now', 'localtime', ?)
+                AND co.refunded_at IS NULL
+                AND COALESCE(co.status, '') != 'refunded'
+            ) THEN 'credit'
+            WHEN EXISTS (
+              SELECT 1
+              FROM xianyu_orders xo
+              WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+            ) THEN 'xianyu'
+            WHEN EXISTS (
+              SELECT 1
+              FROM xhs_orders xo
+              WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+            ) THEN 'xhs'
+            WHEN (
+              rc.redeemed_by IS NOT NULL
+              AND trim(rc.redeemed_by) != ''
+              AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
+              AND NOT EXISTS (
+                SELECT 1
+                FROM purchase_orders po
+                WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM credit_orders co
+                WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM xhs_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM xianyu_orders xo
+                WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+              )
+            ) THEN 'manual'
+            ELSE NULL
+          END AS source
+        FROM gpt_accounts ga
+        JOIN redemption_codes rc ON lower(trim(rc.account_email)) = lower(trim(ga.email))
+        WHERE ga.is_banned = 1
+          AND COALESCE(ga.ban_processed, 0) = 0
+          AND rc.is_redeemed = 1
+          AND rc.redeemed_at IS NOT NULL
+          AND rc.redeemed_at >= DATETIME('now', 'localtime', ?)
+          AND COALESCE(
+            NULLIF((
+              SELECT po2.order_type
+              FROM purchase_orders po2
+              WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+              ORDER BY po2.created_at DESC
+              LIMIT 1
+            ), ''),
+            NULLIF(rc.order_type, ''),
+            'warranty'
+          ) != 'no_warranty'
+      ),
+      eligible_filtered AS (
+        SELECT *
+        FROM eligible_codes
+        WHERE source = ?
+      ),
+      eligible_enriched AS (
+        SELECT
+          ef.original_code_id,
+          ef.redeemed_at,
+          ll.status AS latest_status,
+          COALESCE(NULLIF(TRIM(cl.recovery_account_email), ''), ef.original_account_email) AS current_account_email
+        FROM eligible_filtered ef
+        LEFT JOIN log_latest ll ON ll.original_code_id = ef.original_code_id
+        LEFT JOIN completed_latest cl ON cl.original_code_id = ef.original_code_id
+      ),
+      eligible_with_current AS (
+        SELECT
+          ee.original_code_id,
+          ee.redeemed_at,
+          ee.latest_status,
+          CASE
+            WHEN current_ga.id IS NULL THEN 1
+            ELSE COALESCE(current_ga.is_banned, 0)
+          END AS current_is_banned
+        FROM eligible_enriched ee
+	        LEFT JOIN gpt_accounts current_ga ON lower(trim(current_ga.email)) = lower(trim(ee.current_account_email))
+      )
+    `.trim()
+
+    const eligibilityParams = [threshold, threshold, threshold, threshold, threshold, source]
+    const statsResult = db.exec(
+      `
+        ${eligibilitySql}
+        SELECT
+          SUM(CASE WHEN current_is_banned = 1 AND (latest_status IS NULL OR latest_status != 'failed') THEN 1 ELSE 0 END) AS pending_count,
+          SUM(CASE WHEN current_is_banned = 1 AND latest_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+          SUM(CASE WHEN current_is_banned = 1 THEN 1 ELSE 0 END) AS need_count
+        FROM eligible_with_current
+      `,
+      eligibilityParams
+    )
+
+    const statsRow = statsResult[0]?.values?.[0] || []
+    const pendingCount = Number(statsRow[0] || 0)
+    const failedCount = Number(statsRow[1] || 0)
+    const needCount = Number(statsRow[2] || 0)
+
+    const willProcessCount = Math.min(needCount, availableCount, limit)
+
+    let originalCodeIds = []
+    if (willProcessCount > 0) {
+      const idsResult = db.exec(
+        `
+          ${eligibilitySql}
+          SELECT original_code_id
+          FROM eligible_with_current
+          WHERE current_is_banned = 1
+          ORDER BY redeemed_at ASC, original_code_id ASC
+          LIMIT ?
+        `,
+        [...eligibilityParams, willProcessCount]
+      )
+      originalCodeIds = (idsResult[0]?.values || [])
+        .map(row => Number(row?.[0] || 0))
+        .filter(value => Number.isFinite(value) && value > 0)
+    }
+
+    const generatedAtResult = db.exec(`SELECT DATETIME('now', 'localtime')`)
+    const generatedAtRaw = generatedAtResult[0]?.values?.[0]?.[0]
+    const generatedAt = generatedAtRaw ? String(generatedAtRaw) : new Date().toISOString()
+
+    return res.json({
+      source,
+      days,
+      pendingCount,
+      failedCount,
+      needCount,
+      availableCount,
+      willProcessCount,
+      originalCodeIds,
+      generatedAt
+    })
+  } catch (error) {
+    console.error('Account recovery one-click preview error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 router.post('/account-recovery/recover', async (req, res) => {
   try {
     const rawIds = req.body?.originalCodeIds ?? req.body?.original_code_ids ?? []
@@ -2464,7 +3047,7 @@ router.post('/account-recovery/recover', async (req, res) => {
     const results = []
 
 	    for (const originalCodeId of originalCodeIds) {
-	      const outcome = await withLocks([`admin-account-recovery:${originalCodeId}`], async () => {
+	      const outcome = await withLocks([`account-recovery:original:${originalCodeId}`], async () => {
 	        const originalResult = db.exec(
 	          `
 	            SELECT
@@ -2474,9 +3057,20 @@ router.post('/account-recovery/recover', async (req, res) => {
               rc.redeemed_by,
               rc.account_email,
               ga.id,
-              ga.email
+              ga.email,
+              COALESCE(
+                NULLIF((
+                  SELECT po2.order_type
+                  FROM purchase_orders po2
+                  WHERE (po2.code_id = rc.id OR (po2.code_id IS NULL AND po2.code = rc.code))
+                  ORDER BY po2.created_at DESC
+                  LIMIT 1
+                ), ''),
+                NULLIF(rc.order_type, ''),
+                'warranty'
+              ) AS order_type
 	            FROM redemption_codes rc
-	            JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
+	            JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
 	            LEFT JOIN account_recovery_logs ar_recovery
 	              ON ar_recovery.recovery_code_id = rc.id
 	              AND ar_recovery.status IN ('success', 'skipped')
@@ -2514,6 +3108,31 @@ router.post('/account-recovery/recover', async (req, res) => {
                   FROM xianyu_orders xo
                   WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
                     AND COALESCE(xo.order_time, xo.created_at) >= DATETIME('now', 'localtime', ?)
+                )
+                OR (
+                  rc.redeemed_by IS NOT NULL
+                  AND trim(rc.redeemed_by) != ''
+                  AND (lower(rc.redeemed_by) LIKE '%@%' OR lower(rc.redeemed_by) LIKE '%email:%')
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM purchase_orders po
+                    WHERE (po.code_id = rc.id OR (po.code_id IS NULL AND po.code = rc.code))
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM credit_orders co
+                    WHERE (co.code_id = rc.id OR (co.code_id IS NULL AND co.code = rc.code))
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM xhs_orders xo
+                    WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM xianyu_orders xo
+                    WHERE (xo.assigned_code_id = rc.id OR (xo.assigned_code_id IS NULL AND xo.assigned_code = rc.code))
+                  )
                 )
               )
               AND COALESCE(
@@ -2577,110 +3196,120 @@ router.post('/account-recovery/recover', async (req, res) => {
 	          }
 	        }
 
-	      const recoveryCodeResult = db.exec(
-	        `
-	          SELECT rc.id, rc.code, rc.channel, rc.account_email
-	          FROM redemption_codes rc
-	          JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-	          WHERE rc.is_redeemed = 0
-	            AND rc.account_email IS NOT NULL
-	            AND COALESCE(ga.user_count, 0) + COALESCE(ga.invite_count, 0) < 6
-	            AND COALESCE(ga.is_banned, 0) = 0
-	            AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-	            AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
-	            AND (
-	                (
-	                  COALESCE(ga.is_open, 0) = 0
-	                  AND DATE(ga.created_at) >= DATE('now', 'localtime', '-7 day')
-	                )
-	                OR (
-	                  ga.is_open = 1
-	                  AND DATE(ga.created_at) = DATE('now', 'localtime')
-                )
-              )
-	            ORDER BY
-	              CASE
-	                WHEN COALESCE(ga.is_open, 0) = 0 AND DATE(ga.created_at) >= DATE('now', 'localtime', '-7 day') THEN 0
-	                ELSE 1
-	              END ASC,
-	              ga.created_at DESC,
-	              rc.created_at DESC
-            LIMIT 1
-          `
-        )
+        const originalCode = row[1] ? String(row[1]) : ''
+        const resolvedOrderType = row[7] ? String(row[7]) : null
+        const orderDeadlineMs = resolveOrderDeadlineMs(db, {
+          originalCodeId,
+          originalCode,
+          redeemedAt,
+          orderType: resolvedOrderType
+        })
 
-        const recoveryRow = recoveryCodeResult[0]?.values?.[0]
-        if (!recoveryRow) {
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            status: 'failed',
-            errorMessage: '暂无可用补号账号兑换码'
+        const recoverySettings = await getAccountRecoverySettings(db)
+        const codeCreatedWithinDays = Math.max(1, toInt(recoverySettings?.effective?.codeCreatedWithinDays, 7))
+        const requireExpireCoverDeadline = Boolean(recoverySettings?.effective?.requireExpireCoverDeadline)
+        const triedRecoveryCodeIds = new Set()
+        let lastAttemptError = null
+        let lastAttemptRecovery = null
+
+        for (let attempt = 1; attempt <= ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS; attempt += 1) {
+          const selectedRecovery = selectRecoveryCode(db, {
+            minExpireMs: requireExpireCoverDeadline ? orderDeadlineMs : Date.now(),
+            capacityLimit: 6,
+            preferNonToday: requireExpireCoverDeadline,
+            preferLatestExpire: !requireExpireCoverDeadline,
+            limit: 200,
+            codeCreatedWithinDays,
+            excludeCodeIds: Array.from(triedRecoveryCodeIds)
           })
-          saveDatabase()
-          return { originalCodeId, outcome: 'failed', message: '暂无可用补号账号兑换码' }
-        }
+          if (!selectedRecovery) break
 
-        const recoveryCodeId = Number(recoveryRow[0])
-        const recoveryCode = String(recoveryRow[1] || '')
-        const recoveryChannel = String(recoveryRow[2] || 'common') || 'common'
-        const recoveryAccountEmail = String(recoveryRow[3] || '')
-        const skipCodeFormatValidation = recoveryChannel === 'xhs'
+          lastAttemptRecovery = selectedRecovery
+          triedRecoveryCodeIds.add(selectedRecovery.recoveryCodeId)
 
-        try {
-          const redemptionResult = await redeemCodeInternal({
-            code: recoveryCode,
-            email: redeemedBy,
-            channel: recoveryChannel,
-            skipCodeFormatValidation
-          })
+          const recoveryCodeId = selectedRecovery.recoveryCodeId
+          const recoveryCode = selectedRecovery.recoveryCode
+          const recoveryChannel = selectedRecovery.recoveryChannel || 'common'
+          const recoveryAccountEmail = selectedRecovery.recoveryAccountEmail
 
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            recoveryCodeId,
-            recoveryCode,
-            recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
-            status: 'success'
-          })
-          saveDatabase()
-          return {
-            originalCodeId,
-            outcome: 'success',
-            message: '补录成功',
-            recovery: {
+          try {
+            const redemptionResult = await redeemCodeInternal({
+              code: recoveryCode,
+              email: redeemedBy,
+              channel: recoveryChannel
+            })
+
+            recordAccountRecovery(db, {
+              email: redeemedBy,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
               recoveryCodeId,
               recoveryCode,
-              recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail
+              recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail,
+              status: 'success'
+            })
+            saveDatabase()
+            return {
+              originalCodeId,
+              outcome: 'success',
+              message: '补录成功',
+              recovery: {
+                recoveryCodeId,
+                recoveryCode,
+                recoveryAccountEmail: redemptionResult.metadata?.accountEmail || recoveryAccountEmail
+              }
+            }
+          } catch (error) {
+            lastAttemptError = error
+            const shouldRetry = attempt < ACCOUNT_RECOVERY_REDEEM_MAX_ATTEMPTS && shouldRetryAccountRecoveryRedeem(error)
+            if (shouldRetry) continue
+
+            const statusCode = typeof error?.statusCode === 'number'
+              ? error.statusCode
+              : (typeof error?.status === 'number' ? error.status : 500)
+            recordAccountRecovery(db, {
+              email: redeemedBy,
+              originalCodeId,
+              originalRedeemedAt: redeemedAt,
+              originalAccountEmail,
+              recoveryMode: 'open-account',
+              recoveryCodeId,
+              recoveryCode,
+              recoveryAccountEmail,
+              status: 'failed',
+              errorMessage: error?.message || '补录失败'
+            })
+            saveDatabase()
+            return {
+              originalCodeId,
+              outcome: 'failed',
+              message: error?.message || '补录失败',
+              statusCode
             }
           }
-        } catch (error) {
-          const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : (typeof error?.status === 'number' ? error.status : 500)
-          recordAccountRecovery(db, {
-            email: redeemedBy,
-            originalCodeId,
-            originalRedeemedAt: redeemedAt,
-            originalAccountEmail,
-            recoveryMode: 'open-account',
-            recoveryCodeId,
-            recoveryCode,
-            recoveryAccountEmail,
-            status: 'failed',
-            errorMessage: error?.message || '补录失败'
-          })
-          saveDatabase()
-          return {
-            originalCodeId,
-            outcome: 'failed',
-            message: error?.message || '补录失败',
-            statusCode
-          }
+        }
+
+        const errorMessage = lastAttemptError?.message || '暂无可用通用渠道补录兑换码'
+        recordAccountRecovery(db, {
+          email: redeemedBy,
+          originalCodeId,
+          originalRedeemedAt: redeemedAt,
+          originalAccountEmail,
+          recoveryMode: 'open-account',
+          recoveryCodeId: lastAttemptRecovery?.recoveryCodeId,
+          recoveryCode: lastAttemptRecovery?.recoveryCode,
+          recoveryAccountEmail: lastAttemptRecovery?.recoveryAccountEmail,
+          status: 'failed',
+          errorMessage
+        })
+        saveDatabase()
+
+        return {
+          originalCodeId,
+          outcome: 'failed',
+          message: errorMessage
         }
       })
 
@@ -2690,6 +3319,400 @@ router.post('/account-recovery/recover', async (req, res) => {
     return res.json({ results })
   } catch (error) {
     console.error('Admin account recovery error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ---------------------------
+// Channels Admin
+// ---------------------------
+
+router.get('/channels', async (req, res) => {
+  try {
+    const db = await getDatabase()
+    const { list } = await getChannels(db, { forceRefresh: true })
+    return res.json({ channels: list })
+  } catch (error) {
+    console.error('[Admin] get channels error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/channels', async (req, res) => {
+  try {
+    const rawKey = req.body?.key ?? req.body?.channelKey
+    const key = normalizeChannelKey(rawKey, '')
+    if (!key || !CHANNEL_KEY_REGEX.test(key)) {
+      return res.status(400).json({ error: '渠道 key 不合法（仅允许 2-32 位小写字母/数字/连字符）' })
+    }
+
+    const name = String(req.body?.name ?? '').trim()
+    if (!name) {
+      return res.status(400).json({ error: '请输入渠道名称' })
+    }
+
+    const allowCommonFallback = parseBoolean(req.body?.allowCommonFallback ?? req.body?.allow_common_fallback, false)
+    const isActive = parseBoolean(req.body?.isActive ?? req.body?.is_active, true)
+    const sortOrder = Number.isFinite(Number(req.body?.sortOrder ?? req.body?.sort_order))
+      ? Number(req.body?.sortOrder ?? req.body?.sort_order)
+      : 0
+
+    const db = await getDatabase()
+    const exists = db.exec('SELECT id FROM channels WHERE key = ? LIMIT 1', [key])
+    if (exists[0]?.values?.length) {
+      return res.status(409).json({ error: '渠道已存在' })
+    }
+
+    db.run(
+      `
+        INSERT INTO channels (
+          key, name, redeem_mode, allow_common_fallback, is_active, is_builtin, sort_order, created_at, updated_at
+        ) VALUES (?, ?, 'code', ?, ?, 0, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+      `,
+      [key, name, allowCommonFallback ? 1 : 0, isActive ? 1 : 0, sortOrder]
+    )
+    saveDatabase()
+    invalidateChannelsCache()
+
+    const channel = await getChannelByKey(db, key, { forceRefresh: true })
+    return res.status(201).json({ channel })
+  } catch (error) {
+    console.error('[Admin] create channel error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/channels/:key', async (req, res) => {
+  try {
+    const key = normalizeChannelKey(req.params.key, '')
+    if (!key || !CHANNEL_KEY_REGEX.test(key)) {
+      return res.status(400).json({ error: '渠道 key 不合法' })
+    }
+
+    const db = await getDatabase()
+    const existingResult = db.exec(
+      `
+        SELECT key, name, redeem_mode, allow_common_fallback, is_active, is_builtin, sort_order
+        FROM channels
+        WHERE key = ?
+        LIMIT 1
+      `,
+      [key]
+    )
+    const existingRow = existingResult[0]?.values?.[0]
+    if (!existingRow) {
+      return res.status(404).json({ error: '渠道不存在' })
+    }
+
+    const prevName = String(existingRow[1] ?? '').trim()
+    const updates = []
+    const params = []
+
+    if (req.body?.name !== undefined) {
+      const name = String(req.body?.name ?? '').trim()
+      if (!name) return res.status(400).json({ error: '渠道名称不能为空' })
+      updates.push('name = ?')
+      params.push(name)
+    }
+
+    if (req.body?.allowCommonFallback !== undefined || req.body?.allow_common_fallback !== undefined) {
+      const allowCommonFallback = parseBoolean(req.body?.allowCommonFallback ?? req.body?.allow_common_fallback, false)
+      updates.push('allow_common_fallback = ?')
+      params.push(allowCommonFallback ? 1 : 0)
+    }
+
+    if (req.body?.isActive !== undefined || req.body?.is_active !== undefined) {
+      const isActive = parseBoolean(req.body?.isActive ?? req.body?.is_active, true)
+      updates.push('is_active = ?')
+      params.push(isActive ? 1 : 0)
+    }
+
+    if (req.body?.sortOrder !== undefined || req.body?.sort_order !== undefined) {
+      const sortOrder = Number.isFinite(Number(req.body?.sortOrder ?? req.body?.sort_order))
+        ? Number(req.body?.sortOrder ?? req.body?.sort_order)
+        : 0
+      updates.push('sort_order = ?')
+      params.push(sortOrder)
+    }
+
+    if (!updates.length) {
+      const channel = await getChannelByKey(db, key, { forceRefresh: true })
+      return res.json({ channel })
+    }
+
+    db.run(
+      `
+        UPDATE channels
+        SET ${updates.join(', ')},
+            updated_at = DATETIME('now', 'localtime')
+        WHERE key = ?
+      `,
+      [...params, key]
+    )
+
+    if (req.body?.name !== undefined) {
+      const nextName = String(req.body?.name ?? '').trim()
+      if (nextName && nextName !== prevName) {
+        db.run(
+          `
+            UPDATE redemption_codes
+            SET channel_name = ?,
+                updated_at = DATETIME('now', 'localtime')
+            WHERE lower(trim(channel)) = ?
+          `,
+          [nextName, key]
+        )
+      }
+    }
+
+    saveDatabase()
+    invalidateChannelsCache()
+
+    const channel = await getChannelByKey(db, key, { forceRefresh: true })
+    return res.json({ channel })
+  } catch (error) {
+    console.error('[Admin] update channel error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.delete('/channels/:key', async (req, res) => {
+  try {
+    const key = normalizeChannelKey(req.params.key, '')
+    if (!key || !CHANNEL_KEY_REGEX.test(key)) {
+      return res.status(400).json({ error: '渠道 key 不合法' })
+    }
+
+    const db = await getDatabase()
+    const result = db.exec('SELECT is_builtin FROM channels WHERE key = ? LIMIT 1', [key])
+    const row = result[0]?.values?.[0]
+    if (!row) {
+      return res.status(404).json({ error: '渠道不存在' })
+    }
+    const isBuiltin = Number(row[0] || 0) === 1
+    if (isBuiltin) {
+      return res.status(400).json({ error: '内置渠道不可删除' })
+    }
+
+    db.run('DELETE FROM channels WHERE key = ?', [key])
+    saveDatabase()
+    invalidateChannelsCache()
+    return res.json({ ok: true })
+  } catch (error) {
+    console.error('[Admin] delete channel error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ---------------------------
+// Purchase Products Admin
+// ---------------------------
+
+const validateProductKey = (value) => {
+  const normalized = normalizeProductKey(value)
+  return normalized && PRODUCT_KEY_REGEX.test(normalized) ? normalized : ''
+}
+
+const validateChannelList = async (db, rawChannels) => {
+  const { list } = normalizeCodeChannels(rawChannels)
+  if (!list.length) {
+    return { ok: false, error: '请选择至少 1 个渠道', channels: [] }
+  }
+  if (list.length > 3) {
+    return { ok: false, error: '最多仅支持配置 3 个渠道（按优先级排序）', channels: [] }
+  }
+
+  const { byKey } = await getChannels(db)
+  const resolved = []
+  for (const token of list) {
+    const key = normalizeChannelKey(token, '')
+    if (!key) continue
+    const channel = byKey.get(key)
+    if (!channel) {
+      return { ok: false, error: `渠道不存在：${key}`, channels: [] }
+    }
+    if (!channel.isActive) {
+      return { ok: false, error: `渠道已停用：${key}`, channels: [] }
+    }
+    resolved.push(key)
+  }
+  if (!resolved.length) {
+    return { ok: false, error: '渠道配置无效', channels: [] }
+  }
+  return { ok: true, channels: resolved }
+}
+
+router.get('/purchase-products', async (req, res) => {
+  try {
+    const db = await getDatabase()
+    const products = await listPurchaseProducts(db, { activeOnly: false })
+    return res.json({ products })
+  } catch (error) {
+    console.error('[Admin] get purchase-products error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/purchase-products', async (req, res) => {
+  try {
+    const raw = req.body || {}
+    const productKey = validateProductKey(raw.productKey ?? raw.product_key)
+    if (!productKey) {
+      return res.status(400).json({ error: 'productKey 不合法（仅允许 2-32 位小写字母/数字/连字符）' })
+    }
+
+    const productName = String(raw.productName ?? raw.product_name ?? '').trim()
+    if (!productName) {
+      return res.status(400).json({ error: '请输入商品名称' })
+    }
+
+    const amount = normalizeMoney2(raw.amount)
+    if (!amount) {
+      return res.status(400).json({ error: 'amount 不合法（必须为大于 0 的金额）' })
+    }
+
+    const serviceDays = Number(raw.serviceDays ?? raw.service_days)
+    if (!Number.isFinite(serviceDays) || serviceDays < 1) {
+      return res.status(400).json({ error: 'serviceDays 不合法（必须 >= 1）' })
+    }
+
+    const rawOrderType = String(raw.orderType ?? raw.order_type ?? '').trim().toLowerCase()
+    if (!rawOrderType) {
+      return res.status(400).json({ error: '请选择订单类型（orderType）' })
+    }
+    const orderType = normalizePurchaseProductOrderType(rawOrderType)
+    if (orderType !== rawOrderType) {
+      return res.status(400).json({ error: 'orderType 不合法（仅允许 warranty/no_warranty/anti_ban）' })
+    }
+
+    const db = await getDatabase()
+    const exists = await getPurchaseProductByKey(db, productKey)
+    if (exists) {
+      return res.status(409).json({ error: '商品已存在' })
+    }
+
+    const channelValidation = await validateChannelList(db, raw.codeChannels ?? raw.code_channels)
+    if (!channelValidation.ok) {
+      return res.status(400).json({ error: channelValidation.error })
+    }
+
+    const isActive = parseBoolean(raw.isActive ?? raw.is_active, true)
+    const sortOrder = Number.isFinite(Number(raw.sortOrder ?? raw.sort_order)) ? Number(raw.sortOrder ?? raw.sort_order) : 0
+
+    const product = await upsertPurchaseProduct(db, {
+      productKey,
+      productName,
+      amount,
+      serviceDays,
+      orderType,
+      codeChannels: channelValidation.channels.join(','),
+      isActive,
+      sortOrder,
+    })
+
+    return res.status(201).json({ product })
+  } catch (error) {
+    console.error('[Admin] create purchase-product error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.patch('/purchase-products/:productKey', async (req, res) => {
+  try {
+    const productKey = validateProductKey(req.params.productKey)
+    if (!productKey) {
+      return res.status(400).json({ error: 'productKey 不合法' })
+    }
+
+    const db = await getDatabase()
+    const existing = await getPurchaseProductByKey(db, productKey)
+    if (!existing) {
+      return res.status(404).json({ error: '商品不存在' })
+    }
+
+    const raw = req.body || {}
+    const nextProductName = raw.productName !== undefined || raw.product_name !== undefined
+      ? String(raw.productName ?? raw.product_name ?? '').trim()
+      : existing.productName
+    if (!nextProductName) {
+      return res.status(400).json({ error: '商品名称不能为空' })
+    }
+
+    const nextAmount = raw.amount !== undefined ? normalizeMoney2(raw.amount) : String(existing.amount || '').trim()
+    if (!nextAmount) {
+      return res.status(400).json({ error: 'amount 不合法（必须为大于 0 的金额）' })
+    }
+
+    const nextServiceDays = raw.serviceDays !== undefined || raw.service_days !== undefined
+      ? Number(raw.serviceDays ?? raw.service_days)
+      : Number(existing.serviceDays)
+    if (!Number.isFinite(nextServiceDays) || nextServiceDays < 1) {
+      return res.status(400).json({ error: 'serviceDays 不合法（必须 >= 1）' })
+    }
+
+    let nextOrderType = existing.orderType
+    if (raw.orderType !== undefined || raw.order_type !== undefined) {
+      const rawOrderType = String(raw.orderType ?? raw.order_type ?? '').trim().toLowerCase()
+      if (!rawOrderType) return res.status(400).json({ error: 'orderType 不能为空' })
+      const normalized = normalizePurchaseProductOrderType(rawOrderType)
+      if (normalized !== rawOrderType) {
+        return res.status(400).json({ error: 'orderType 不合法（仅允许 warranty/no_warranty/anti_ban）' })
+      }
+      nextOrderType = normalized
+    }
+
+    let nextCodeChannels = existing.codeChannels
+    if (raw.codeChannels !== undefined || raw.code_channels !== undefined) {
+      const channelValidation = await validateChannelList(db, raw.codeChannels ?? raw.code_channels)
+      if (!channelValidation.ok) {
+        return res.status(400).json({ error: channelValidation.error })
+      }
+      nextCodeChannels = channelValidation.channels.join(',')
+    }
+
+    const nextIsActive = raw.isActive !== undefined || raw.is_active !== undefined
+      ? parseBoolean(raw.isActive ?? raw.is_active, Boolean(existing.isActive))
+      : Boolean(existing.isActive)
+    const nextSortOrder = raw.sortOrder !== undefined || raw.sort_order !== undefined
+      ? (Number.isFinite(Number(raw.sortOrder ?? raw.sort_order)) ? Number(raw.sortOrder ?? raw.sort_order) : 0)
+      : Number(existing.sortOrder || 0)
+
+    const product = await upsertPurchaseProduct(db, {
+      productKey,
+      productName: nextProductName,
+      amount: nextAmount,
+      serviceDays: nextServiceDays,
+      orderType: nextOrderType,
+      codeChannels: nextCodeChannels,
+      isActive: nextIsActive,
+      sortOrder: nextSortOrder,
+    })
+
+    return res.json({ product })
+  } catch (error) {
+    console.error('[Admin] update purchase-product error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.delete('/purchase-products/:productKey', async (req, res) => {
+  try {
+    const productKey = validateProductKey(req.params.productKey)
+    if (!productKey) {
+      return res.status(400).json({ error: 'productKey 不合法' })
+    }
+
+    const db = await getDatabase()
+    const existing = await getPurchaseProductByKey(db, productKey)
+    if (!existing) {
+      return res.status(404).json({ error: '商品不存在' })
+    }
+
+    db.run('DELETE FROM purchase_products WHERE product_key = ?', [productKey])
+    saveDatabase()
+    return res.json({ ok: true })
+  } catch (error) {
+    console.error('[Admin] delete purchase-product error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 })

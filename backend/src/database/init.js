@@ -8,12 +8,70 @@ import crypto from 'crypto'
 
 const CHANNEL_LABELS = {
   common: '通用渠道',
+  paypal: 'PayPal 渠道',
   'linux-do': 'Linux DO 渠道',
   xhs: '小红书渠道',
   xianyu: '闲鱼渠道',
+  'artisan-flow': 'ArtisanFlow 渠道',
 }
 const DEFAULT_CHANNEL = 'common'
 const DEFAULT_CHANNEL_NAME = CHANNEL_LABELS[DEFAULT_CHANNEL]
+const BUILTIN_CHANNELS = [
+  {
+    key: 'common',
+    name: CHANNEL_LABELS.common,
+    redeemMode: 'code',
+    allowCommonFallback: 0,
+    isActive: 1,
+    isBuiltin: 1,
+    sortOrder: 10
+  },
+  {
+    key: 'paypal',
+    name: CHANNEL_LABELS.paypal,
+    redeemMode: 'code',
+    allowCommonFallback: 0,
+    isActive: 1,
+    isBuiltin: 0,
+    sortOrder: 20
+  },
+  {
+    key: 'linux-do',
+    name: CHANNEL_LABELS['linux-do'],
+    redeemMode: 'linux-do',
+    allowCommonFallback: 0,
+    isActive: 1,
+    isBuiltin: 1,
+    sortOrder: 30
+  },
+  {
+    key: 'xhs',
+    name: CHANNEL_LABELS.xhs,
+    redeemMode: 'xhs',
+    allowCommonFallback: 1,
+    isActive: 1,
+    isBuiltin: 1,
+    sortOrder: 40
+  },
+  {
+    key: 'xianyu',
+    name: CHANNEL_LABELS.xianyu,
+    redeemMode: 'xianyu',
+    allowCommonFallback: 1,
+    isActive: 1,
+    isBuiltin: 1,
+    sortOrder: 50
+  },
+  {
+    key: 'artisan-flow',
+    name: CHANNEL_LABELS['artisan-flow'],
+    redeemMode: 'api',
+    allowCommonFallback: 0,
+    isActive: 1,
+    isBuiltin: 0,
+    sortOrder: 60
+  }
+]
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -57,6 +115,27 @@ const getTableColumns = (database, tableName) => {
     return new Set(rows.map(row => String(row[1] || '')))
   } catch {
     return new Set()
+  }
+}
+
+const indexExists = (database, indexName) => {
+  if (!database || !indexName) return false
+  const result = database.exec(
+    'SELECT name FROM sqlite_master WHERE type = "index" AND name = ? LIMIT 1',
+    [String(indexName)]
+  )
+  return Boolean(result[0]?.values?.length)
+}
+
+const ensureIndex = (database, indexName, createSql) => {
+  if (!database || !indexName || !createSql) return false
+  if (indexExists(database, indexName)) return false
+  try {
+    database.run(createSql)
+    return true
+  } catch (error) {
+    console.warn(`[DB] 无法创建索引 ${indexName}:`, error)
+    return false
   }
 }
 
@@ -847,12 +926,22 @@ const ensureXhsTables = (database) => {
       }
     }
 
-    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xhs_orders_number ON xhs_orders(order_number)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_status ON xhs_orders(status, created_at)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_usage ON xhs_orders(is_used, created_at)')
-  } catch (error) {
-    console.warn('[DB] 无法初始化 xhs_orders 表:', error)
-  }
+	    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xhs_orders_number ON xhs_orders(order_number)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_status ON xhs_orders(status, created_at)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xhs_orders_usage ON xhs_orders(is_used, created_at)')
+	    changed = ensureIndex(
+	      database,
+	      'idx_xhs_orders_assigned_code_id',
+	      'CREATE INDEX IF NOT EXISTS idx_xhs_orders_assigned_code_id ON xhs_orders(assigned_code_id)'
+	    ) || changed
+	    changed = ensureIndex(
+	      database,
+	      'idx_xhs_orders_assigned_code',
+	      'CREATE INDEX IF NOT EXISTS idx_xhs_orders_assigned_code ON xhs_orders(assigned_code)'
+	    ) || changed
+	  } catch (error) {
+	    console.warn('[DB] 无法初始化 xhs_orders 表:', error)
+	  }
 
   try {
 	    const configExists = database.exec('SELECT name FROM sqlite_master WHERE type="table" AND name="xhs_config"')
@@ -1021,12 +1110,22 @@ const ensureXianyuTables = (database) => {
       }
     }
 
-    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xianyu_orders_order_id ON xianyu_orders(order_id)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_status ON xianyu_orders(status, created_at)')
-    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_usage ON xianyu_orders(is_used, created_at)')
-  } catch (error) {
-    console.warn('[DB] 无法初始化 xianyu_orders 表:', error)
-  }
+	    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_xianyu_orders_order_id ON xianyu_orders(order_id)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_status ON xianyu_orders(status, created_at)')
+	    database.run('CREATE INDEX IF NOT EXISTS idx_xianyu_orders_usage ON xianyu_orders(is_used, created_at)')
+	    changed = ensureIndex(
+	      database,
+	      'idx_xianyu_orders_assigned_code_id',
+	      'CREATE INDEX IF NOT EXISTS idx_xianyu_orders_assigned_code_id ON xianyu_orders(assigned_code_id)'
+	    ) || changed
+	    changed = ensureIndex(
+	      database,
+	      'idx_xianyu_orders_assigned_code',
+	      'CREATE INDEX IF NOT EXISTS idx_xianyu_orders_assigned_code ON xianyu_orders(assigned_code)'
+	    ) || changed
+	  } catch (error) {
+	    console.warn('[DB] 无法初始化 xianyu_orders 表:', error)
+	  }
 
   try {
     const configExists = database.exec('SELECT name FROM sqlite_master WHERE type="table" AND name="xianyu_config"')
@@ -1145,6 +1244,210 @@ const ensureLinuxDoUsersTable = (database) => {
   return changed
 }
 
+const ensureChannelsTable = (database) => {
+  if (!database) return false
+  let changed = false
+
+  try {
+    if (!tableExists(database, 'channels')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS channels (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          key TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL,
+          redeem_mode TEXT NOT NULL DEFAULT 'code',
+          allow_common_fallback INTEGER DEFAULT 0,
+          is_active INTEGER DEFAULT 1,
+          is_builtin INTEGER DEFAULT 0,
+          sort_order INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+          updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
+        )
+      `)
+      changed = true
+    } else {
+      const columns = getTableColumns(database, 'channels')
+      const addColumn = (name, ddl) => {
+        if (columns.has(name)) return
+        database.run(`ALTER TABLE channels ADD COLUMN ${ddl}`)
+        changed = true
+        columns.add(name)
+      }
+
+      addColumn('key', 'key TEXT')
+      addColumn('name', 'name TEXT')
+      addColumn('redeem_mode', "redeem_mode TEXT NOT NULL DEFAULT 'code'")
+      addColumn('allow_common_fallback', 'allow_common_fallback INTEGER DEFAULT 0')
+      addColumn('is_active', 'is_active INTEGER DEFAULT 1')
+      addColumn('is_builtin', 'is_builtin INTEGER DEFAULT 0')
+      addColumn('sort_order', 'sort_order INTEGER DEFAULT 0')
+      addColumn('created_at', "created_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+      addColumn('updated_at', "updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+    }
+
+    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_key ON channels(key)')
+    database.run('CREATE INDEX IF NOT EXISTS idx_channels_active_sort ON channels(is_active, sort_order, id)')
+  } catch (error) {
+    console.warn('[DB] 无法初始化 channels 表:', error)
+  }
+
+  try {
+    const NON_BUILTIN_KEYS = ['paypal', 'artisan-flow']
+    database.run(
+      `UPDATE channels SET is_builtin = 0, updated_at = DATETIME('now', 'localtime') WHERE key IN (${NON_BUILTIN_KEYS.map(() => '?').join(',')}) AND is_builtin = 1`,
+      NON_BUILTIN_KEYS
+    )
+
+    for (const channel of BUILTIN_CHANNELS) {
+      const existing = database.exec('SELECT id FROM channels WHERE key = ? LIMIT 1', [channel.key])
+      if (existing[0]?.values?.length) continue
+      database.run(
+        `
+          INSERT INTO channels (key, name, redeem_mode, allow_common_fallback, is_active, is_builtin, sort_order, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+        `,
+        [
+          channel.key,
+          channel.name,
+          channel.redeemMode,
+          Number(channel.allowCommonFallback) ? 1 : 0,
+          Number(channel.isActive) ? 1 : 0,
+          Number(channel.isBuiltin) ? 1 : 0,
+          Number.isFinite(Number(channel.sortOrder)) ? Number(channel.sortOrder) : 0
+        ]
+      )
+      changed = true
+    }
+  } catch (error) {
+    console.warn('[DB] 无法写入内置渠道数据:', error)
+  }
+
+  return changed
+}
+
+const ensurePurchaseProductsTable = (database) => {
+  if (!database) return false
+  let changed = false
+
+  try {
+    if (!tableExists(database, 'purchase_products')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS purchase_products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_key TEXT UNIQUE NOT NULL,
+          product_name TEXT NOT NULL,
+          amount TEXT NOT NULL,
+          service_days INTEGER NOT NULL,
+          order_type TEXT NOT NULL DEFAULT 'warranty',
+          code_channels TEXT NOT NULL,
+          is_active INTEGER DEFAULT 1,
+          sort_order INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+          updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
+        )
+      `)
+      changed = true
+    } else {
+      const columns = getTableColumns(database, 'purchase_products')
+      const addColumn = (name, ddl) => {
+        if (columns.has(name)) return
+        database.run(`ALTER TABLE purchase_products ADD COLUMN ${ddl}`)
+        changed = true
+        columns.add(name)
+      }
+
+      addColumn('product_key', 'product_key TEXT')
+      addColumn('product_name', 'product_name TEXT')
+      addColumn('amount', 'amount TEXT')
+      addColumn('service_days', 'service_days INTEGER')
+      addColumn('order_type', "order_type TEXT NOT NULL DEFAULT 'warranty'")
+      addColumn('code_channels', 'code_channels TEXT')
+      addColumn('is_active', 'is_active INTEGER DEFAULT 1')
+      addColumn('sort_order', 'sort_order INTEGER DEFAULT 0')
+      addColumn('created_at', "created_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+      addColumn('updated_at', "updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+    }
+
+    database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_products_key ON purchase_products(product_key)')
+    database.run('CREATE INDEX IF NOT EXISTS idx_purchase_products_active_sort ON purchase_products(is_active, sort_order, id)')
+  } catch (error) {
+    console.warn('[DB] 无法初始化 purchase_products 表:', error)
+  }
+
+  try {
+    const countResult = database.exec('SELECT COUNT(*) FROM purchase_products')
+    const total = Number(countResult[0]?.values?.[0]?.[0] || 0)
+    if (total > 0) return changed
+
+    const toInt = (value, fallback) => {
+      const parsed = Number.parseInt(String(value ?? ''), 10)
+      return Number.isFinite(parsed) ? parsed : fallback
+    }
+
+    const formatMoney = (value, fallback) => {
+      const parsed = Number.parseFloat(String(value ?? ''))
+      if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+      return (Math.round(parsed * 100) / 100).toFixed(2)
+    }
+
+    const baseNameRaw = String(process.env.PURCHASE_PRODUCT_NAME || '通用渠道激活码').trim()
+    const baseName = baseNameRaw || '通用渠道激活码'
+    const warrantyAmount = formatMoney(process.env.PURCHASE_PRICE, '1.00')
+    const warrantyServiceDays = Math.max(1, toInt(process.env.PURCHASE_SERVICE_DAYS, 30))
+
+    const noWarrantyAmount = formatMoney(process.env.PURCHASE_NO_WARRANTY_PRICE, '5.00')
+    const noWarrantyServiceDays = Math.max(1, toInt(process.env.PURCHASE_NO_WARRANTY_SERVICE_DAYS, warrantyServiceDays))
+    const noWarrantyNameRaw = String(process.env.PURCHASE_NO_WARRANTY_PRODUCT_NAME || `${baseName}（无质保）`).trim()
+    const noWarrantyName = noWarrantyNameRaw || `${baseName}（无质保）`
+
+    database.run(
+      `
+        INSERT INTO purchase_products (
+          product_key, product_name, amount, service_days, order_type, code_channels, is_active, sort_order, created_at, updated_at
+        ) VALUES
+          (?, ?, ?, ?, ?, ?, 1, 10, DATETIME('now', 'localtime'), DATETIME('now', 'localtime')),
+          (?, ?, ?, ?, ?, ?, 1, 20, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+      `,
+      [
+        'warranty',
+        baseName,
+        warrantyAmount,
+        warrantyServiceDays,
+        'warranty',
+        'paypal',
+        'no_warranty',
+        noWarrantyName,
+        noWarrantyAmount,
+        noWarrantyServiceDays,
+        'no_warranty',
+        'common'
+      ]
+    )
+    changed = true
+
+    const antiBanNameRaw = String(process.env.PURCHASE_ANTI_BAN_PRODUCT_NAME || '').trim()
+    const antiBanPriceRaw = String(process.env.PURCHASE_ANTI_BAN_PRICE || '').trim()
+    if (antiBanNameRaw || antiBanPriceRaw) {
+      const antiBanName = antiBanNameRaw || `${baseName}(防封禁)`
+      const antiBanAmount = formatMoney(antiBanPriceRaw, '10.00')
+      const antiBanDays = Math.max(1, toInt(process.env.PURCHASE_ANTI_BAN_SERVICE_DAYS, warrantyServiceDays))
+      database.run(
+        `
+          INSERT INTO purchase_products (
+            product_key, product_name, amount, service_days, order_type, code_channels, is_active, sort_order, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'anti_ban', 'common', 0, 30, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+        `,
+        ['anti_ban', antiBanName, antiBanAmount, antiBanDays]
+      )
+      changed = true
+    }
+  } catch (error) {
+    console.warn('[DB] 无法写入默认支付商品数据:', error)
+  }
+
+  return changed
+}
+
 const ensureAccountRecoveryTable = (database) => {
   if (!database) return false
   let changed = false
@@ -1227,6 +1530,16 @@ const ensureAccountRecoveryTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_email ON account_recovery_logs (email)')
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_original_code ON account_recovery_logs (original_code_id)')
   database.run('CREATE INDEX IF NOT EXISTS idx_account_recovery_status ON account_recovery_logs (status)')
+  changed = ensureIndex(
+    database,
+    'idx_account_recovery_recovery_code_status',
+    'CREATE INDEX IF NOT EXISTS idx_account_recovery_recovery_code_status ON account_recovery_logs (recovery_code_id, status)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_account_recovery_original_status_id',
+    'CREATE INDEX IF NOT EXISTS idx_account_recovery_original_status_id ON account_recovery_logs (original_code_id, status, id DESC)'
+  ) || changed
 
   return changed
 }
@@ -1253,6 +1566,8 @@ const ensurePurchaseOrdersTable = (database) => {
           amount TEXT NOT NULL,
           service_days INTEGER DEFAULT 30,
           order_type TEXT DEFAULT 'warranty',
+          product_key TEXT,
+          code_channel TEXT,
           pay_type TEXT,
           status TEXT DEFAULT 'created',
           zpay_oid TEXT,
@@ -1307,6 +1622,8 @@ const ensurePurchaseOrdersTable = (database) => {
         addColumn('amount', 'amount TEXT')
         addColumn('service_days', 'service_days INTEGER DEFAULT 30')
         addColumn('order_type', "order_type TEXT DEFAULT 'warranty'")
+        addColumn('product_key', 'product_key TEXT')
+        addColumn('code_channel', 'code_channel TEXT')
         addColumn('pay_type', 'pay_type TEXT')
         addColumn('status', 'status TEXT DEFAULT \'created\'')
         addColumn('zpay_oid', 'zpay_oid TEXT')
@@ -1344,6 +1661,44 @@ const ensurePurchaseOrdersTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_status_created ON purchase_orders(status, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_email_created ON purchase_orders(email, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_user_created ON purchase_orders(user_id, created_at)')
+  database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_product_created ON purchase_orders(product_key, created_at)')
+  database.run('CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_channel_created ON purchase_orders(code_channel, created_at)')
+  changed = ensureIndex(
+    database,
+    'idx_purchase_orders_code_id_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_id_created_desc ON purchase_orders(code_id, created_at DESC)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_purchase_orders_code_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_purchase_orders_code_created_desc ON purchase_orders(code, created_at DESC)'
+  ) || changed
+
+  try {
+    // Backfill for older orders (best-effort).
+    database.run(
+      `
+        UPDATE purchase_orders
+        SET product_key = COALESCE(NULLIF(TRIM(product_key), ''), COALESCE(NULLIF(TRIM(order_type), ''), 'warranty'))
+        WHERE product_key IS NULL OR TRIM(product_key) = ''
+      `
+    )
+    database.run(
+      `
+        UPDATE purchase_orders
+        SET code_channel = COALESCE(
+          NULLIF(TRIM(code_channel), ''),
+          CASE
+            WHEN lower(trim(order_type)) = 'warranty' THEN 'paypal'
+            ELSE 'common'
+          END
+        )
+        WHERE code_channel IS NULL OR TRIM(code_channel) = ''
+      `
+    )
+  } catch (error) {
+    console.warn('[DB] 无法回填 purchase_orders.product_key/code_channel:', error)
+  }
 
   return changed
 }
@@ -1458,6 +1813,71 @@ const ensurePointsLedgerTable = (database) => {
   return changed
 }
 
+const ensureAnnouncementsTables = (database) => {
+  if (!database) return false
+  let changed = false
+
+  try {
+    if (!tableExists(database, 'announcements')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS announcements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          is_published INTEGER NOT NULL DEFAULT 1,
+          pinned INTEGER NOT NULL DEFAULT 0,
+          published_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+          created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
+          updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
+        )
+      `)
+      changed = true
+    } else {
+      const columns = getTableColumns(database, 'announcements')
+      const addColumn = (name, ddl) => {
+        if (columns.has(name)) return
+        database.run(`ALTER TABLE announcements ADD COLUMN ${ddl}`)
+        console.log(`[DB] 已添加 announcements.${name} 列`)
+        changed = true
+        columns.add(name)
+      }
+
+      addColumn('is_published', 'is_published INTEGER DEFAULT 1')
+      addColumn('pinned', 'pinned INTEGER DEFAULT 0')
+      addColumn('published_at', "published_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+      addColumn('created_at', "created_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+      addColumn('updated_at', "updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))")
+    }
+
+    if (!tableExists(database, 'announcement_reads')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS announcement_reads (
+          announcement_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          read_at DATETIME NOT NULL,
+          PRIMARY KEY (announcement_id, user_id)
+        )
+      `)
+      changed = true
+    } else {
+      const columns = getTableColumns(database, 'announcement_reads')
+      if (!columns.has('read_at')) {
+        database.run('ALTER TABLE announcement_reads ADD COLUMN read_at DATETIME')
+        console.log('[DB] 已添加 announcement_reads.read_at 列')
+        changed = true
+      }
+    }
+
+    database.run('CREATE INDEX IF NOT EXISTS idx_announcements_published_at ON announcements(published_at)')
+    database.run('CREATE INDEX IF NOT EXISTS idx_announcements_pinned_published_at ON announcements(pinned, published_at)')
+    database.run('CREATE INDEX IF NOT EXISTS idx_announcement_reads_user ON announcement_reads(user_id, read_at)')
+  } catch (error) {
+    console.warn('[DB] 无法初始化 announcements/announcement_reads 表:', error)
+  }
+
+  return changed
+}
+
 const ensureCreditOrdersTable = (database) => {
   if (!database) return false
   let changed = false
@@ -1549,6 +1969,16 @@ const ensureCreditOrdersTable = (database) => {
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_uid_created ON credit_orders(uid, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_status_created ON credit_orders(status, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS idx_credit_orders_scene ON credit_orders(scene, created_at)')
+  changed = ensureIndex(
+    database,
+    'idx_credit_orders_code_id_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_credit_orders_code_id_created_desc ON credit_orders(code_id, created_at DESC)'
+  ) || changed
+  changed = ensureIndex(
+    database,
+    'idx_credit_orders_code_created_desc',
+    'CREATE INDEX IF NOT EXISTS idx_credit_orders_code_created_desc ON credit_orders(code, created_at DESC)'
+  ) || changed
 
   return changed
 }
@@ -1682,6 +2112,8 @@ export async function initDatabase() {
         const accountRecoveryCreated = ensureAccountRecoveryTable(database)
         const purchaseOrdersCreated = ensurePurchaseOrdersTable(database)
         const creditOrdersCreated = ensureCreditOrdersTable(database)
+        const channelsCreated = ensureChannelsTable(database)
+        const purchaseProductsCreated = ensurePurchaseProductsTable(database)
         const pointsWithdrawalsCreated = ensurePointsWithdrawalsTable(database)
         const pointsLedgerCreated = ensurePointsLedgerTable(database)
         const accountExceptionHistoryCreated = ensureAccountExceptionHistoryTable(database)
@@ -1727,6 +2159,7 @@ export async function initDatabase() {
               saveDatabase()
             }
 
+            // is_demoted 已弃用（仅保留字段兼容历史数据）
             if (!columns.includes('is_demoted')) {
               database.run('ALTER TABLE gpt_accounts ADD COLUMN is_demoted INTEGER DEFAULT 0')
               console.log('已添加 is_demoted 列到 gpt_accounts 表')
@@ -1854,14 +2287,19 @@ export async function initDatabase() {
             )
             saveDatabase()
           }
-        } catch (err) {
-          console.log('列检查/添加已跳过:', err.message)
-        }
+	        } catch (err) {
+	          console.log('列检查/添加已跳过:', err.message)
+	        }
 
-        const migration = migrateUtcTimestampsToLocaltime(database)
-        if (migration.migrated) {
-          await saveDatabase()
-        }
+	        const coreIndexesCreated = ensureCoreIndexes(database)
+	        if (coreIndexesCreated) {
+	          saveDatabase()
+	        }
+
+	        const migration = migrateUtcTimestampsToLocaltime(database)
+	        if (migration.migrated) {
+	          await saveDatabase()
+	        }
 
         return
       }
@@ -1895,6 +2333,7 @@ export async function initDatabase() {
   `)
 
   // Create gpt_accounts table to manage GPT accounts
+  // NOTE: gpt_accounts.is_demoted 已弃用（仅保留字段兼容历史数据；业务逻辑不再读取/写入该字段）。
   database.run(`
 	    CREATE TABLE IF NOT EXISTS gpt_accounts (
 	      id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1920,10 +2359,10 @@ export async function initDatabase() {
 	  `)
 
   // Create redemption_codes table to manage redemption codes
-  database.run(`
-    CREATE TABLE IF NOT EXISTS redemption_codes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
+	  database.run(`
+	    CREATE TABLE IF NOT EXISTS redemption_codes (
+	      id INTEGER PRIMARY KEY AUTOINCREMENT,
+	      code TEXT UNIQUE NOT NULL,
       is_redeemed INTEGER DEFAULT 0,
       redeemed_at DATETIME,
       redeemed_by TEXT,
@@ -1938,9 +2377,11 @@ export async function initDatabase() {
       reserved_for_entry_id INTEGER,
       reserved_at DATETIME,
       reserved_for_order_no TEXT,
-      reserved_for_order_email TEXT
-    )
-  `)
+	      reserved_for_order_email TEXT
+	    )
+	  `)
+
+	  ensureCoreIndexes(database)
 
   const waitingRoomInitialized = ensureWaitingRoomTable(database)
   const openAccountSeatProtectionsInitialized = ensureOpenAccountSeatProtectionsTable(database)
@@ -1950,6 +2391,8 @@ export async function initDatabase() {
   const accountRecoveryInitialized = ensureAccountRecoveryTable(database)
   const purchaseOrdersInitialized = ensurePurchaseOrdersTable(database)
   const creditOrdersInitialized = ensureCreditOrdersTable(database)
+  const channelsInitialized = ensureChannelsTable(database)
+  const purchaseProductsInitialized = ensurePurchaseProductsTable(database)
   const pointsWithdrawalsInitialized = ensurePointsWithdrawalsTable(database)
   const pointsLedgerInitialized = ensurePointsLedgerTable(database)
   const accountExceptionHistoryInitialized = ensureAccountExceptionHistoryTable(database)
@@ -1988,6 +2431,7 @@ export async function initDatabase() {
         console.log('已添加 is_open 列到 gpt_accounts 表')
       }
 
+      // is_demoted 已弃用（仅保留字段兼容历史数据）
       if (!columns.includes('is_demoted')) {
         database.run('ALTER TABLE gpt_accounts ADD COLUMN is_demoted INTEGER DEFAULT 0')
         console.log('已添加 is_demoted 列到 gpt_accounts 表')

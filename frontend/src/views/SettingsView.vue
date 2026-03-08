@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { authService, userService, adminService, versionService } from '@/services/api'
-import type { VersionInfo, LatestVersionInfo } from '@/services/api'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { authService, userService, adminService, versionService, purchaseService } from '@/services/api'
+import type { VersionInfo, LatestVersionInfo, Channel, PurchaseProduct, PurchaseMeta, PurchaseOrderType } from '@/services/api'
 import { useAppConfigStore } from '@/stores/appConfig'
 import {
   Card,
@@ -27,7 +27,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-vue-next'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import AnnouncementAdminPanel from '@/components/AnnouncementAdminPanel.vue'
+import { Eye, EyeOff, Sparkles, KeyRound, AlertCircle, CheckCircle2, RefreshCw, Settings, CreditCard, Link, Mail, Shield } from 'lucide-vue-next'
+
+const teleportReady = ref(false)
+const activeTab = ref<'settings' | 'announcements'>('settings')
+const settingsSubTab = ref('general')
+
+const settingsNav = [
+  { id: 'general', label: '基础设置', desc: '功能开关、白名单与补录', icon: Settings },
+  { id: 'billing', label: '支付与财务', desc: '商品、支付通道与提现', icon: CreditCard },
+  { id: 'integrations', label: '第三方集成', desc: 'OAuth、验证与机器人', icon: Link },
+  { id: 'notifications', label: '邮件与通知', desc: 'SMTP 告警邮件配置', icon: Mail },
+  { id: 'security', label: '核心与安全', desc: 'API 密钥与渠道管理', icon: Shield },
+]
+
+const activeNavItem = computed(() => settingsNav.find(n => n.id === settingsSubTab.value))
 
 // 版本检查相关
 const versionLoading = ref(false)
@@ -92,6 +108,44 @@ const featureFlags = ref({
 const featureFlagsError = ref('')
 const featureFlagsSuccess = ref('')
 const featureFlagsLoading = ref(false)
+
+// 补录设置（仅超级管理员）
+const accountRecoveryForceTodayCodes = ref(false)
+const accountRecoveryCodeWindowDays = ref('7')
+const accountRecoveryRequireExpireCoverDeadline = ref(false)
+const accountRecoverySettingsError = ref('')
+const accountRecoverySettingsSuccess = ref('')
+const accountRecoverySettingsLoading = ref(false)
+
+// 渠道管理（仅超级管理员）
+const channels = ref<Channel[]>([])
+const channelsLoading = ref(false)
+const channelsError = ref('')
+const channelsSuccess = ref('')
+const channelDialogOpen = ref(false)
+const channelDialogMode = ref<'create' | 'edit'>('create')
+const channelFormKey = ref('')
+const channelFormName = ref('')
+const channelFormAllowFallback = ref(false)
+const channelFormIsActive = ref(true)
+const channelFormSortOrder = ref('0')
+
+// 支付商品管理（仅超级管理员）
+const purchaseProducts = ref<PurchaseProduct[]>([])
+const purchaseProductsLoading = ref(false)
+const purchaseProductsError = ref('')
+const purchaseProductsSuccess = ref('')
+const purchaseProductDialogOpen = ref(false)
+const purchaseProductDialogMode = ref<'create' | 'edit'>('create')
+const purchaseProductFormKey = ref('')
+const purchaseProductFormName = ref('')
+const purchaseProductFormAmount = ref('')
+const purchaseProductFormServiceDays = ref('30')
+const purchaseProductFormOrderType = ref<PurchaseOrderType>('warranty')
+const purchaseProductFormCodeChannels = ref('')
+const purchaseProductFormIsActive = ref(true)
+const purchaseProductFormSortOrder = ref('0')
+const purchaseAvailability = ref<Record<string, number>>({})
 
 // 邮箱后缀白名单
 const emailDomainWhitelist = ref('')
@@ -190,10 +244,17 @@ const telegramLoading = ref(false)
 const showTelegramBotToken = ref(false)
 
 onMounted(async () => {
+  await nextTick()
+  teleportReady.value = !!document.getElementById('header-actions')
+
   if (!isSuperAdmin.value) return
   await loadApiKey()
   await Promise.all([
     loadFeatureFlags(),
+    loadAccountRecoverySettings(),
+    loadChannels(),
+    loadPurchaseProducts(),
+    loadPurchaseAvailability(),
     loadEmailDomainWhitelist(),
     loadPointsWithdrawSettings(),
     loadSmtpSettings(),
@@ -203,6 +264,10 @@ onMounted(async () => {
     loadTurnstileSettings(),
     loadTelegramSettings(),
   ])
+})
+
+onUnmounted(() => {
+  teleportReady.value = false
 })
 
 const loadApiKey = async () => {
@@ -254,6 +319,267 @@ const saveFeatureFlags = async () => {
     featureFlagsError.value = err.response?.data?.error || '保存失败'
   } finally {
     featureFlagsLoading.value = false
+  }
+}
+
+watch(accountRecoveryForceTodayCodes, (next) => {
+  if (!next) {
+    accountRecoveryRequireExpireCoverDeadline.value = false
+  }
+  if (!accountRecoveryCodeWindowDays.value.trim()) {
+    accountRecoveryCodeWindowDays.value = '7'
+  }
+})
+
+const loadAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  try {
+    const response = await adminService.getAccountRecoverySettings()
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '加载补录设置失败'
+  }
+}
+
+const saveAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  accountRecoverySettingsLoading.value = true
+  try {
+    const parsedDays = Number.parseInt(accountRecoveryCodeWindowDays.value, 10)
+    const codeWindowDays = Number.isFinite(parsedDays) ? Math.max(1, Math.min(365, parsedDays)) : 7
+    const settingsPayload = {
+      forceTodayCodes: accountRecoveryForceTodayCodes.value,
+      codeWindowDays,
+      requireExpireCoverDeadline: accountRecoveryForceTodayCodes.value ? accountRecoveryRequireExpireCoverDeadline.value : false
+    }
+    const response = await adminService.updateAccountRecoverySettings({ settings: settingsPayload })
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+    accountRecoverySettingsSuccess.value = '已保存'
+    setTimeout(() => (accountRecoverySettingsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '保存失败'
+  } finally {
+    accountRecoverySettingsLoading.value = false
+  }
+}
+
+const loadChannels = async () => {
+  if (channelsLoading.value) return
+  channelsLoading.value = true
+  channelsError.value = ''
+  channelsSuccess.value = ''
+  try {
+    const response = await adminService.getChannels()
+    channels.value = Array.isArray(response.channels) ? response.channels : []
+  } catch (err: any) {
+    channelsError.value = err.response?.data?.error || '加载渠道失败'
+  } finally {
+    channelsLoading.value = false
+  }
+}
+
+const openCreateChannelDialog = () => {
+  channelDialogMode.value = 'create'
+  channelFormKey.value = ''
+  channelFormName.value = ''
+  channelFormAllowFallback.value = false
+  channelFormIsActive.value = true
+  channelFormSortOrder.value = '0'
+  channelDialogOpen.value = true
+}
+
+const openEditChannelDialog = (channel: Channel) => {
+  channelDialogMode.value = 'edit'
+  channelFormKey.value = channel.key
+  channelFormName.value = channel.name
+  channelFormAllowFallback.value = Boolean(channel.allowCommonFallback)
+  channelFormIsActive.value = Boolean(channel.isActive)
+  channelFormSortOrder.value = String(channel.sortOrder ?? 0)
+  channelDialogOpen.value = true
+}
+
+const submitChannelDialog = async () => {
+  channelsError.value = ''
+  channelsSuccess.value = ''
+  try {
+    if (channelDialogMode.value === 'create') {
+      await adminService.createChannel({
+        key: channelFormKey.value.trim(),
+        name: channelFormName.value.trim(),
+        allowCommonFallback: channelFormAllowFallback.value,
+        isActive: channelFormIsActive.value,
+        sortOrder: Number.parseInt(channelFormSortOrder.value || '0', 10) || 0
+      })
+    } else {
+      await adminService.updateChannel(channelFormKey.value, {
+        name: channelFormName.value.trim(),
+        allowCommonFallback: channelFormAllowFallback.value,
+        isActive: channelFormIsActive.value,
+        sortOrder: Number.parseInt(channelFormSortOrder.value || '0', 10) || 0
+      })
+    }
+    channelDialogOpen.value = false
+    channelsSuccess.value = '已保存'
+    setTimeout(() => (channelsSuccess.value = ''), 3000)
+    await loadChannels()
+  } catch (err: any) {
+    channelsError.value = err.response?.data?.error || '保存失败'
+  }
+}
+
+const toggleChannelActive = async (channel: Channel) => {
+  channelsError.value = ''
+  channelsSuccess.value = ''
+  try {
+    await adminService.updateChannel(channel.key, { isActive: !channel.isActive })
+    await loadChannels()
+    channelsSuccess.value = '已保存'
+    setTimeout(() => (channelsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    channelsError.value = err.response?.data?.error || '更新失败'
+  }
+}
+
+const deleteChannel = async (channel: Channel) => {
+  if (!confirm(`确定要删除渠道「${channel.name || channel.key}」吗？此操作不可撤销。`)) return
+  channelsError.value = ''
+  channelsSuccess.value = ''
+  try {
+    await adminService.deleteChannel(channel.key)
+    await loadChannels()
+    channelsSuccess.value = '已删除'
+    setTimeout(() => (channelsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    channelsError.value = err.response?.data?.error || '删除失败'
+  }
+}
+
+const loadPurchaseProducts = async () => {
+  if (purchaseProductsLoading.value) return
+  purchaseProductsLoading.value = true
+  purchaseProductsError.value = ''
+  purchaseProductsSuccess.value = ''
+  try {
+    const response = await adminService.getPurchaseProducts()
+    purchaseProducts.value = Array.isArray(response.products) ? response.products : []
+  } catch (err: any) {
+    purchaseProductsError.value = err.response?.data?.error || '加载商品失败'
+  } finally {
+    purchaseProductsLoading.value = false
+  }
+}
+
+const loadPurchaseAvailability = async () => {
+  try {
+    const meta: PurchaseMeta = await purchaseService.getMeta()
+    const map: Record<string, number> = {}
+    for (const plan of meta.plans || []) {
+      map[plan.key] = Number(plan.availableCount || 0)
+    }
+    purchaseAvailability.value = map
+  } catch {
+    purchaseAvailability.value = {}
+  }
+}
+
+const refreshPurchaseProducts = async () => {
+  await Promise.all([loadPurchaseProducts(), loadPurchaseAvailability()])
+}
+
+const openCreatePurchaseProductDialog = () => {
+  purchaseProductDialogMode.value = 'create'
+  purchaseProductFormKey.value = ''
+  purchaseProductFormName.value = ''
+  purchaseProductFormAmount.value = ''
+  purchaseProductFormServiceDays.value = '30'
+  purchaseProductFormOrderType.value = 'warranty'
+  purchaseProductFormCodeChannels.value = 'paypal,common'
+  purchaseProductFormIsActive.value = true
+  purchaseProductFormSortOrder.value = '0'
+  purchaseProductDialogOpen.value = true
+}
+
+const openEditPurchaseProductDialog = (product: PurchaseProduct) => {
+  purchaseProductDialogMode.value = 'edit'
+  purchaseProductFormKey.value = product.productKey
+  purchaseProductFormName.value = product.productName
+  purchaseProductFormAmount.value = product.amount
+  purchaseProductFormServiceDays.value = String(product.serviceDays ?? 30)
+  purchaseProductFormOrderType.value = product.orderType
+  purchaseProductFormCodeChannels.value = product.codeChannels
+  purchaseProductFormIsActive.value = Boolean(product.isActive)
+  purchaseProductFormSortOrder.value = String(product.sortOrder ?? 0)
+  purchaseProductDialogOpen.value = true
+}
+
+const submitPurchaseProductDialog = async () => {
+  purchaseProductsError.value = ''
+  purchaseProductsSuccess.value = ''
+
+  const payload = {
+    productKey: purchaseProductFormKey.value.trim(),
+    productName: purchaseProductFormName.value.trim(),
+    amount: purchaseProductFormAmount.value.trim(),
+    serviceDays: Number.parseInt(purchaseProductFormServiceDays.value || '0', 10),
+    orderType: purchaseProductFormOrderType.value,
+    codeChannels: purchaseProductFormCodeChannels.value.trim(),
+    isActive: purchaseProductFormIsActive.value,
+    sortOrder: Number.parseInt(purchaseProductFormSortOrder.value || '0', 10) || 0,
+  }
+
+  try {
+    if (purchaseProductDialogMode.value === 'create') {
+      await adminService.createPurchaseProduct(payload)
+    } else {
+      await adminService.updatePurchaseProduct(payload.productKey, payload)
+    }
+    purchaseProductDialogOpen.value = false
+    purchaseProductsSuccess.value = '已保存'
+    setTimeout(() => (purchaseProductsSuccess.value = ''), 3000)
+    await Promise.all([loadPurchaseProducts(), loadPurchaseAvailability()])
+  } catch (err: any) {
+    purchaseProductsError.value = err.response?.data?.error || '保存失败'
+  }
+}
+
+const togglePurchaseProductActive = async (product: PurchaseProduct) => {
+  purchaseProductsError.value = ''
+  purchaseProductsSuccess.value = ''
+  try {
+    await adminService.updatePurchaseProduct(product.productKey, { isActive: !product.isActive })
+    await Promise.all([loadPurchaseProducts(), loadPurchaseAvailability()])
+    purchaseProductsSuccess.value = '已保存'
+    setTimeout(() => (purchaseProductsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    purchaseProductsError.value = err.response?.data?.error || '更新失败'
+  }
+}
+
+const deletePurchaseProduct = async (product: PurchaseProduct) => {
+  if (!confirm(`确定要删除商品「${product.productName || product.productKey}」吗？此操作不可撤销。`)) return
+  purchaseProductsError.value = ''
+  purchaseProductsSuccess.value = ''
+  try {
+    await adminService.deletePurchaseProduct(product.productKey)
+    await Promise.all([loadPurchaseProducts(), loadPurchaseAvailability()])
+    purchaseProductsSuccess.value = '已删除'
+    setTimeout(() => (purchaseProductsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    purchaseProductsError.value = err.response?.data?.error || '删除失败'
   }
 }
 
@@ -865,20 +1191,31 @@ const savePointsWithdrawSettings = async () => {
 </script>
 
 <template>
-  <div class="space-y-8">
-    <!-- 页面头部：检查更新按钮 -->
-    <div v-if="isSuperAdmin" class="flex justify-end">
-      <Button
-        variant="outline"
-        :disabled="versionLoading"
-        class="h-10 px-4 border-gray-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 rounded-xl transition-all"
-        @click="checkForUpdates"
-      >
-        <RefreshCw v-if="versionLoading" class="w-4 h-4 mr-2 animate-spin" />
-        <RefreshCw v-else class="w-4 h-4 mr-2" />
-        检查更新
-      </Button>
-    </div>
+  <Tabs v-model="activeTab" class="space-y-8">
+    <!-- Header Actions -->
+    <Teleport v-if="teleportReady && isSuperAdmin" to="#header-actions">
+      <div class="flex items-center gap-3">
+        <TabsList class="bg-gray-100/70 border border-gray-200 rounded-xl p-1">
+          <TabsTrigger value="settings" class="rounded-lg px-4">
+            系统设置
+          </TabsTrigger>
+          <TabsTrigger value="announcements" class="rounded-lg px-4">
+            公告管理
+          </TabsTrigger>
+        </TabsList>
+
+        <Button
+          variant="outline"
+          :disabled="versionLoading"
+          class="h-10 px-4 border-gray-200 bg-white hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 rounded-xl transition-all"
+          @click="checkForUpdates"
+        >
+          <RefreshCw v-if="versionLoading" class="w-4 h-4 mr-2 animate-spin" />
+          <RefreshCw v-else class="w-4 h-4 mr-2" />
+          检查更新
+        </Button>
+      </div>
+    </Teleport>
 
     <!-- 版本检查对话框 -->
     <Dialog v-model:open="versionDialogOpen">
@@ -937,7 +1274,7 @@ const savePointsWithdrawSettings = async () => {
       </DialogContent>
     </Dialog>
 
-    <div class="grid gap-8 lg:grid-cols-2">
+    <TabsContent value="settings" class="mt-0">
       <!-- 非超级管理员提示 -->
       <Card
         v-if="!isSuperAdmin"
@@ -949,10 +1286,49 @@ const savePointsWithdrawSettings = async () => {
         </CardHeader>
       </Card>
 
-      <!-- API密钥管理 -->
+      <div v-else class="space-y-6">
+        <!-- 顶部分类导航 (sticky) -->
+        <div class="sticky -top-4 lg:-top-8 z-20 -mx-4 px-4 lg:-mx-8 lg:px-8 pt-4 lg:pt-8 pb-3 bg-[#F5F5F7]/90 backdrop-blur-md border-b border-gray-200/60">
+          <nav class="flex items-center gap-1.5 overflow-x-auto scrollbar-hide -mb-px">
+            <button
+              v-for="nav in settingsNav"
+              :key="nav.id"
+              @click="settingsSubTab = nav.id"
+              class="group relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all shrink-0"
+              :class="settingsSubTab === nav.id
+                ? 'text-blue-700 bg-blue-50'
+                : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50'"
+            >
+              <component
+                :is="nav.icon"
+                class="w-4 h-4 shrink-0"
+                :class="settingsSubTab === nav.id ? 'text-blue-600' : 'text-gray-400 group-hover:text-gray-600'"
+              />
+              <span>{{ nav.label }}</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- 内容区 -->
+        <div class="space-y-6">
+          <!-- 当前分类标题 -->
+          <div class="flex items-center gap-3">
+            <div class="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-50 text-blue-600">
+              <component :is="activeNavItem?.icon" class="w-[18px] h-[18px]" />
+            </div>
+            <div>
+              <h2 class="text-base font-bold text-gray-900">{{ activeNavItem?.label }}</h2>
+              <p class="text-xs text-gray-500">{{ activeNavItem?.desc }}</p>
+            </div>
+          </div>
+
+          <!-- 卡片列表 -->
+          <div class="grid gap-6 lg:grid-cols-2">
+            <template v-if="settingsSubTab === 'security'">
+            <!-- API密钥管理 -->
       <Card
         v-if="isSuperAdmin"
-        class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col"
+        class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2"
       >
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <div class="flex items-center gap-3 mb-1">
@@ -1031,8 +1407,11 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <!-- 邮箱后缀白名单 -->
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+            </template>
+
+            <template v-if="settingsSubTab === 'general'">
+            <!-- 邮箱后缀白名单 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">邮箱后缀白名单</CardTitle>
           <CardDescription class="text-gray-500">用于注册时校验邮箱域名（逗号分隔）。留空表示不限制。</CardDescription>
@@ -1153,7 +1532,364 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <!-- SMTP / 第三方配置 -->
+      <!-- 补录设置 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">补录设置</CardTitle>
+          <CardDescription class="text-gray-500">
+            控制补录时可用兑换码的创建时间窗口，以及是否强制账号过期覆盖订单截止日。
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="space-y-3">
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">强制仅使用当天新创建的兑换码</p>
+                <p class="text-xs text-gray-500">关闭后默认使用近 7 天内创建的兑换码（可自定义）。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+            </div>
+
+            <div v-if="!accountRecoveryForceTodayCodes" class="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <Label for="accountRecoveryCodeWindowDays" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换码创建范围（天）</Label>
+              <Input
+                id="accountRecoveryCodeWindowDays"
+                v-model="accountRecoveryCodeWindowDays"
+                type="number"
+                min="1"
+                max="365"
+                placeholder="7"
+                class="h-11 bg-white border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
+              />
+              <p class="text-xs text-gray-400">例如 7 表示允许使用近 7 天内创建的补录码。</p>
+            </div>
+
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">要求账号过期时间覆盖订单截止日</p>
+                <p class="text-xs text-gray-500">仅在开启“强制当天码”时可用；否则后端会强制关闭。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryRequireExpireCoverDeadline"
+                :disabled="!accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+          </div>
+
+          <div v-if="accountRecoverySettingsError" class="rounded-xl bg-red-50 p-4 text-red-600 border border-red-100 text-sm font-medium">
+            {{ accountRecoverySettingsError }}
+          </div>
+
+          <div v-if="accountRecoverySettingsSuccess" class="rounded-xl bg-green-50 p-4 text-green-600 border border-green-100 text-sm font-medium">
+            {{ accountRecoverySettingsSuccess }}
+          </div>
+
+          <div class="flex flex-col sm:flex-row gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl"
+              @click="loadAccountRecoverySettings"
+            >
+              刷新
+            </Button>
+            <Button
+              type="button"
+              :disabled="accountRecoverySettingsLoading"
+              class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5"
+              @click="saveAccountRecoverySettings"
+            >
+              {{ accountRecoverySettingsLoading ? '保存中...' : '保存补录设置' }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+            </template>
+
+            <template v-if="settingsSubTab === 'security'">
+            <!-- 渠道管理 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">渠道管理</CardTitle>
+          <CardDescription class="text-gray-500">
+            新增/停用渠道，并配置是否允许回退通用码；新增渠道默认使用通用兑换页（/redeem/&lt;key&gt;）。
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <Button type="button" variant="outline" class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl" :disabled="channelsLoading" @click="loadChannels">
+              {{ channelsLoading ? '加载中...' : '刷新' }}
+            </Button>
+            <Button type="button" class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5" @click="openCreateChannelDialog">
+              新增渠道
+            </Button>
+          </div>
+
+          <div v-if="channelsError" class="rounded-xl bg-red-50 p-4 text-red-600 border border-red-100 text-sm font-medium">
+            {{ channelsError }}
+          </div>
+          <div v-if="channelsSuccess" class="rounded-xl bg-green-50 p-4 text-green-600 border border-green-100 text-sm font-medium">
+            {{ channelsSuccess }}
+          </div>
+
+          <div class="overflow-x-auto border border-gray-100 rounded-2xl">
+            <table class="min-w-full text-sm">
+              <thead class="bg-gray-50">
+                <tr class="text-left text-gray-500">
+                  <th class="px-4 py-3 font-semibold">Key</th>
+                  <th class="px-4 py-3 font-semibold">名称</th>
+                  <th class="px-4 py-3 font-semibold">模式</th>
+                  <th class="px-4 py-3 font-semibold">回退通用码</th>
+                  <th class="px-4 py-3 font-semibold">状态</th>
+                  <th class="px-4 py-3 font-semibold">兑换链接</th>
+                  <th class="px-4 py-3 font-semibold text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="channel in channels" :key="channel.key" class="border-t border-gray-100">
+                  <td class="px-4 py-3 font-mono text-gray-900">{{ channel.key }}</td>
+                  <td class="px-4 py-3 text-gray-900">{{ channel.name }}</td>
+                  <td class="px-4 py-3 font-mono text-gray-700">{{ channel.redeemMode }}</td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs font-medium" :class="channel.allowCommonFallback ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'">
+                      {{ channel.allowCommonFallback ? '允许' : '不允许' }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs font-medium" :class="channel.isActive ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'">
+                      {{ channel.isActive ? '启用' : '停用' }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 font-mono text-gray-700">/redeem/{{ channel.key }}</td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center justify-end gap-2">
+                      <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="openEditChannelDialog(channel)">
+                        编辑
+                      </Button>
+                      <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="toggleChannelActive(channel)">
+                        {{ channel.isActive ? '停用' : '启用' }}
+                      </Button>
+                      <Button v-if="!channel.isBuiltin" type="button" variant="outline" class="h-9 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl" @click="deleteChannel(channel)">
+                        删除
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!channels.length">
+                  <td colspan="7" class="px-4 py-6 text-center text-gray-400">暂无渠道数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+            </template>
+
+            <template v-if="settingsSubTab === 'billing'">
+            <!-- 支付商品管理 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">支付商品管理</CardTitle>
+          <CardDescription class="text-gray-500">
+            配置商品价格/服务期/订单类型以及渠道优先级（codeChannels），下单时系统会按优先级自动匹配有库存的渠道并锁定。
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <Button type="button" variant="outline" class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl" :disabled="purchaseProductsLoading" @click="refreshPurchaseProducts">
+              {{ purchaseProductsLoading ? '加载中...' : '刷新' }}
+            </Button>
+            <Button type="button" class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5" @click="openCreatePurchaseProductDialog">
+              新增商品
+            </Button>
+          </div>
+
+          <div v-if="purchaseProductsError" class="rounded-xl bg-red-50 p-4 text-red-600 border border-red-100 text-sm font-medium">
+            {{ purchaseProductsError }}
+          </div>
+          <div v-if="purchaseProductsSuccess" class="rounded-xl bg-green-50 p-4 text-green-600 border border-green-100 text-sm font-medium">
+            {{ purchaseProductsSuccess }}
+          </div>
+
+          <div class="overflow-x-auto border border-gray-100 rounded-2xl">
+            <table class="min-w-full text-sm">
+              <thead class="bg-gray-50">
+                <tr class="text-left text-gray-500">
+                  <th class="px-4 py-3 font-semibold">Key</th>
+                  <th class="px-4 py-3 font-semibold">名称</th>
+                  <th class="px-4 py-3 font-semibold">价格</th>
+                  <th class="px-4 py-3 font-semibold">服务期</th>
+                  <th class="px-4 py-3 font-semibold">类型</th>
+                  <th class="px-4 py-3 font-semibold">渠道策略</th>
+                  <th class="px-4 py-3 font-semibold">库存</th>
+                  <th class="px-4 py-3 font-semibold">状态</th>
+                  <th class="px-4 py-3 font-semibold text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="product in purchaseProducts" :key="product.productKey" class="border-t border-gray-100">
+                  <td class="px-4 py-3 font-mono text-gray-900">{{ product.productKey }}</td>
+                  <td class="px-4 py-3 text-gray-900">{{ product.productName }}</td>
+                  <td class="px-4 py-3 font-mono text-gray-700">¥ {{ product.amount }}</td>
+                  <td class="px-4 py-3 text-gray-700">{{ product.serviceDays }} 天</td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">{{ product.orderType }}</span>
+                  </td>
+                  <td class="px-4 py-3 font-mono text-gray-700">{{ product.codeChannels }}</td>
+                  <td class="px-4 py-3 font-mono text-gray-700">{{ purchaseAvailability[product.productKey] ?? '-' }}</td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-1 rounded-full text-xs font-medium" :class="product.isActive ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'">
+                      {{ product.isActive ? '上架' : '下架' }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center justify-end gap-2">
+                      <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="openEditPurchaseProductDialog(product)">
+                        编辑
+                      </Button>
+                      <Button type="button" variant="outline" class="h-9 px-3 border-gray-200 rounded-xl" @click="togglePurchaseProductActive(product)">
+                        {{ product.isActive ? '停用' : '启用' }}
+                      </Button>
+                      <Button type="button" variant="outline" class="h-9 px-3 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl" @click="deletePurchaseProduct(product)">
+                        删除
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!purchaseProducts.length">
+                  <td colspan="9" class="px-4 py-6 text-center text-gray-400">暂无商品数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog v-model:open="channelDialogOpen">
+        <DialogContent class="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle class="text-xl font-bold text-gray-900">{{ channelDialogMode === 'create' ? '新增渠道' : '编辑渠道' }}</DialogTitle>
+            <DialogDescription class="text-gray-500">渠道 key 仅支持小写字母/数字/连字符。</DialogDescription>
+          </DialogHeader>
+
+          <div class="space-y-4 py-4">
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">渠道 Key</Label>
+              <Input v-model="channelFormKey" :disabled="channelDialogMode === 'edit'" placeholder="douyin" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">渠道名称</Label>
+              <Input v-model="channelFormName" placeholder="抖音渠道" class="h-11 bg-gray-50 border-gray-200 rounded-xl text-sm" />
+            </div>
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">允许回退通用码</p>
+                <p class="text-xs text-gray-500">开启后可在该渠道入口使用通用渠道兑换码。</p>
+              </div>
+              <input type="checkbox" v-model="channelFormAllowFallback" class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500" />
+            </div>
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">启用</p>
+              </div>
+              <input type="checkbox" v-model="channelFormIsActive" class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500" />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">排序（sortOrder）</Label>
+              <Input v-model="channelFormSortOrder" type="number" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+            </div>
+
+            <div class="flex flex-col sm:flex-row gap-3 pt-2">
+              <Button type="button" variant="outline" class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl" @click="channelDialogOpen = false">
+                取消
+              </Button>
+              <Button type="button" class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5" @click="submitChannelDialog">
+                保存
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog v-model:open="purchaseProductDialogOpen">
+        <DialogContent class="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle class="text-xl font-bold text-gray-900">{{ purchaseProductDialogMode === 'create' ? '新增商品' : '编辑商品' }}</DialogTitle>
+            <DialogDescription class="text-gray-500">codeChannels 按优先级用英文逗号分隔，例如：paypal,common</DialogDescription>
+          </DialogHeader>
+
+          <div class="space-y-4 py-4">
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">商品 Key</Label>
+              <Input v-model="purchaseProductFormKey" :disabled="purchaseProductDialogMode === 'edit'" placeholder="warranty_90" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">名称</Label>
+              <Input v-model="purchaseProductFormName" placeholder="质保 90 天" class="h-11 bg-gray-50 border-gray-200 rounded-xl text-sm" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="space-y-2">
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">价格（amount）</Label>
+                <Input v-model="purchaseProductFormAmount" placeholder="15.00" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+              </div>
+              <div class="space-y-2">
+                <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">服务期（天）</Label>
+                <Input v-model="purchaseProductFormServiceDays" type="number" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+              </div>
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">订单类型（orderType）</Label>
+              <Select v-model="purchaseProductFormOrderType">
+                <SelectTrigger class="h-11 bg-gray-50 border-gray-200 rounded-xl">
+                  <SelectValue placeholder="请选择" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="warranty">warranty</SelectItem>
+                  <SelectItem value="no_warranty">no_warranty</SelectItem>
+                  <SelectItem value="anti_ban">anti_ban</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">渠道策略（codeChannels）</Label>
+              <Input v-model="purchaseProductFormCodeChannels" placeholder="paypal,common" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+              <p class="text-xs text-gray-400">可用渠道：{{ channels.map(c => c.key).join(', ') || '（暂无）' }}</p>
+            </div>
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">上架</p>
+              </div>
+              <input type="checkbox" v-model="purchaseProductFormIsActive" class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500" />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">排序（sortOrder）</Label>
+              <Input v-model="purchaseProductFormSortOrder" type="number" class="h-11 bg-gray-50 border-gray-200 rounded-xl font-mono text-sm" />
+            </div>
+
+            <div class="flex flex-col sm:flex-row gap-3 pt-2">
+              <Button type="button" variant="outline" class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl" @click="purchaseProductDialogOpen = false">
+                取消
+              </Button>
+              <Button type="button" class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5" @click="submitPurchaseProductDialog">
+                保存
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+            </template>
+
+            <template v-if="settingsSubTab === 'notifications'">
+            <!-- SMTP / 第三方配置 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">SMTP 邮件告警配置</CardTitle>
@@ -1302,8 +2038,11 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+      <template v-if="settingsSubTab === 'integrations'">
+      <!-- Linux DO OAuth 配置 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Linux DO OAuth 配置</CardTitle>
           <CardDescription class="text-gray-500">用于 Linux DO 登录/授权（保存后实时生效）。</CardDescription>
@@ -1387,7 +2126,7 @@ const savePointsWithdrawSettings = async () => {
         </CardContent>
       </Card>
 
-      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Linux DO Credit 配置</CardTitle>
           <CardDescription class="text-gray-500">用于 Credit 积分支付/回调验签（保存后实时生效）。</CardDescription>
@@ -1460,7 +2199,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'billing'">
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">ZPAY 支付配置</CardTitle>
@@ -1546,7 +2287,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'integrations'">
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
         <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
           <CardTitle class="text-xl font-bold text-gray-900">Cloudflare Turnstile 配置</CardTitle>
@@ -1753,7 +2496,9 @@ const savePointsWithdrawSettings = async () => {
           </div>
         </CardContent>
       </Card>
+      </template>
 
+      <template v-if="settingsSubTab === 'billing'">
       <!-- 积分提现设置 -->
       <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
 	          <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
@@ -1827,6 +2572,14 @@ const savePointsWithdrawSettings = async () => {
             </div>
           </CardContent>
       </Card>
-    </div>
-  </div>
+      </template>
+          </div>
+        </div>
+      </div>
+    </TabsContent>
+
+    <TabsContent v-if="isSuperAdmin" value="announcements" class="mt-0">
+      <AnnouncementAdminPanel />
+    </TabsContent>
+  </Tabs>
 </template>

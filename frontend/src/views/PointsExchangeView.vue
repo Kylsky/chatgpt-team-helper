@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { authService, userService, type PointsLedgerRecord, type PointsWithdrawRecord, type TeamSeatType } from '@/services/api'
+import { authService, userService, type PointsLedgerRecord, type PointsWithdrawRecord } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
-import { Coins, Gift, RefreshCw, Wallet, Link2, HelpCircle } from 'lucide-vue-next'
+import { Coins, Gift, RefreshCw, Wallet, Link2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const { success: showSuccessToast, error: showErrorToast } = useToast()
@@ -31,12 +31,7 @@ const syncCurrentUser = () => {
 const points = ref(0)
 const pointsMetaLoading = ref(false)
 const teamSeatCostPoints = ref(15)
-const teamSeatType = ref<TeamSeatType>('undemoted')
-const teamSeatRemainingByType = ref<Record<TeamSeatType, number>>({
-  undemoted: 0,
-  demoted: 0,
-})
-const teamSeatRemaining = computed(() => teamSeatRemainingByType.value[teamSeatType.value] || 0)
+const teamSeatRemaining = ref(0)
 const withdrawEnabled = ref(true)
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -140,18 +135,7 @@ const loadPointsMeta = async () => {
     const result = await userService.getPointsMeta()
     points.value = Number(result.points || 0)
     teamSeatCostPoints.value = Number(result.seat?.costPoints || 15)
-    const remainingByType = result.seat?.remainingByType
-    if (remainingByType && typeof remainingByType === 'object') {
-      teamSeatRemainingByType.value = {
-        undemoted: Number(remainingByType.undemoted || 0),
-        demoted: Number(remainingByType.demoted || 0),
-      }
-    } else {
-      teamSeatRemainingByType.value = {
-        undemoted: Number(result.seat?.remaining || 0),
-        demoted: 0,
-      }
-    }
+    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
     withdrawEnabled.value = Boolean(result.withdraw?.enabled)
 
     withdrawRatePoints.value = Number(result.withdraw?.rate?.points || 10)
@@ -290,21 +274,10 @@ const redeemTeamSeat = async () => {
 
   redeemingTeamSeat.value = true
   try {
-    const result = await userService.redeemTeamSeat({ email, seatType: teamSeatType.value })
+    const result = await userService.redeemTeamSeat({ email })
     points.value = Number(result.points || 0)
     teamSeatCostPoints.value = Number(result.seat?.costPoints || teamSeatCostPoints.value)
-    const remainingByType = result.seat?.remainingByType
-    if (remainingByType && typeof remainingByType === 'object') {
-      teamSeatRemainingByType.value = {
-        undemoted: Number(remainingByType.undemoted || 0),
-        demoted: Number(remainingByType.demoted || 0),
-      }
-    } else {
-      teamSeatRemainingByType.value = {
-        undemoted: Number(result.seat?.remaining || 0),
-        demoted: 0,
-      }
-    }
+    teamSeatRemaining.value = Number(result.seat?.remaining || 0)
 
     const inviteStatus = String(result.redemption?.data?.inviteStatus || '').trim()
     showSuccessToast(inviteStatus ? `兑换成功：${inviteStatus}` : (result.message || '兑换成功'))
@@ -516,56 +489,12 @@ onUnmounted(() => {
 	                <CardDescription class="text-gray-500">30 天 · {{ teamSeatCostPoints }} 积分</CardDescription>
 	              </div>
 	            </div>
-	          </CardHeader>
-	          <CardContent class="p-8 space-y-6">
-              <div class="space-y-2">
-                <div class="flex items-center justify-between">
-                  <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">名额类型</Label>
-                  <span class="relative group cursor-help inline-flex items-center gap-1 text-gray-400">
-                    <HelpCircle class="w-4 h-4" />
-	                    <div class="absolute bottom-full right-0 mb-2 w-72 p-3 bg-gray-900/90 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none text-left">
-	                      <div class="font-bold mb-2 border-b border-white/20 pb-1">未降级 vs 已降级</div>
-	                      <div class="space-y-1.5">
-	                        <div><span class="font-semibold">未降级：</span>质保 30 天，空间有概率封禁。</div>
-	                        <div><span class="font-semibold">已降级：</span>质保 30 天，空间封禁概率低，缺点是无法退出工作空间。</div>
-	                      </div>
-	                      <div class="absolute bottom-[-4px] right-4 w-2 h-2 bg-gray-900/90 rotate-45"></div>
-	                    </div>
-	                  </span>
-	                </div>
-
-                <div class="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    class="h-10 rounded-xl border text-sm font-medium transition-colors px-4 disabled:opacity-60 disabled:cursor-not-allowed"
-                    :class="teamSeatType === 'undemoted' ? 'bg-black text-white border-black' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'"
-                    :disabled="redeemingTeamSeat"
-                    @click="teamSeatType = 'undemoted'"
-                  >
-                    <span class="flex items-center justify-between w-full">
-                      <span>未降级</span>
-                      <span class="text-xs tabular-nums opacity-80">{{ teamSeatRemainingByType.undemoted }}</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="h-10 rounded-xl border text-sm font-medium transition-colors px-4 disabled:opacity-60 disabled:cursor-not-allowed"
-                    :class="teamSeatType === 'demoted' ? 'bg-black text-white border-black' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'"
-                    :disabled="redeemingTeamSeat"
-                    @click="teamSeatType = 'demoted'"
-                  >
-                    <span class="flex items-center justify-between w-full">
-                      <span>已降级</span>
-                      <span class="text-xs tabular-nums opacity-80">{{ teamSeatRemainingByType.demoted }}</span>
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-	            <div class="space-y-2">
-	              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">接收邀请邮箱</Label>
-	              <Input
-	                v-model="teamSeatEmail"
+		          </CardHeader>
+		          <CardContent class="p-8 space-y-6">
+		            <div class="space-y-2">
+		              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">接收邀请邮箱</Label>
+		              <Input
+		                v-model="teamSeatEmail"
                 type="email"
                 class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
                 placeholder="输入邮箱地址..."
@@ -575,16 +504,16 @@ onUnmounted(() => {
               <div class="text-xs text-gray-500">
                 邀请将发送至该邮箱。
               </div>
-            </div>
-
-            <div class="flex items-center justify-between rounded-2xl border border-gray-100 bg-gray-50/40 px-5 py-4">
-              <div>
-                <div class="text-sm font-semibold text-gray-900">今日剩余商品数量</div>
-              </div>
-              <div class="text-2xl font-bold text-gray-900 tabular-nums">
-                {{ teamSeatRemaining }}
-              </div>
-            </div>
+	            </div>
+	
+	            <div class="flex items-center justify-between rounded-2xl border border-gray-100 bg-gray-50/40 px-5 py-4">
+	              <div>
+	                <div class="text-sm font-semibold text-gray-900">今日剩余名额</div>
+	              </div>
+	              <div class="text-2xl font-bold text-gray-900 tabular-nums">
+	                {{ teamSeatRemaining }}
+	              </div>
+	            </div>
 
             <div v-if="redeemTeamSeatError" class="text-sm text-red-600">
               {{ redeemTeamSeatError }}

@@ -8,6 +8,8 @@ import { requireMenu } from '../middleware/rbac.js'
 import { withLocks } from '../utils/locks.js'
 import { sendPurchaseOrderEmail } from '../services/email-service.js'
 import { redeemCodeInternal, RedemptionError } from './redemption-codes.js'
+import { getChannels, normalizeChannelKey } from '../utils/channels.js'
+import { getPurchaseProductByKey, listPurchaseProducts, normalizeCodeChannels, normalizeProductKey } from '../services/purchase-products.js'
 import { safeInsertPointsLedgerEntry } from '../utils/points-ledger.js'
 import { getZpaySettings } from '../utils/zpay-settings.js'
 import { sendTelegramBotNotification } from '../services/telegram-notifier.js'
@@ -136,10 +138,49 @@ const ORDER_TYPE_NO_WARRANTY = 'no_warranty'
 const ORDER_TYPE_ANTI_BAN = 'anti_ban'
 const ORDER_TYPE_SET = new Set([ORDER_TYPE_WARRANTY, ORDER_TYPE_NO_WARRANTY, ORDER_TYPE_ANTI_BAN])
 const NO_WARRANTY_REWARD_POINTS = 1
+const CODE_CHANNEL_COMMON = 'common'
+const CODE_CHANNEL_PAYPAL = 'paypal'
 
-const normalizeOrderType = (value) => {
+const parseOrderType = (value) => {
   const normalized = String(value || '').trim().toLowerCase()
-  return ORDER_TYPE_SET.has(normalized) ? normalized : ORDER_TYPE_WARRANTY
+  return ORDER_TYPE_SET.has(normalized) ? normalized : null
+}
+
+const normalizeOrderType = (value) => parseOrderType(value) || ORDER_TYPE_WARRANTY
+
+const resolvePurchaseCodeChannel = (orderType) => (
+  normalizeOrderType(orderType) === ORDER_TYPE_WARRANTY ? CODE_CHANNEL_PAYPAL : CODE_CHANNEL_COMMON
+)
+
+const PURCHASE_ENABLED_ORDER_TYPES_DEFAULT = Object.freeze([ORDER_TYPE_WARRANTY, ORDER_TYPE_NO_WARRANTY])
+const normalizePurchaseEnabledOrderTypes = (value) => {
+  if (value === undefined || value === null) return PURCHASE_ENABLED_ORDER_TYPES_DEFAULT
+  const raw = String(value).trim()
+  if (!raw) return PURCHASE_ENABLED_ORDER_TYPES_DEFAULT
+
+  const normalized = raw.toLowerCase()
+  if (['all', '*', 'true', '1', 'yes', 'on'].includes(normalized)) return PURCHASE_ENABLED_ORDER_TYPES_DEFAULT
+  if (['none', '0', 'false', 'off', 'no'].includes(normalized)) return []
+
+  const tokens = normalized.split(/[\s,|]+/).filter(Boolean)
+  const enabled = new Set()
+  for (const token of tokens) {
+    if (token === 'warranty' || token === '质保') enabled.add(ORDER_TYPE_WARRANTY)
+    if (token === 'no_warranty' || token === 'no-warranty' || token === 'nowarranty' || token === '无质保') {
+      enabled.add(ORDER_TYPE_NO_WARRANTY)
+    }
+  }
+
+  const resolved = PURCHASE_ENABLED_ORDER_TYPES_DEFAULT.filter(type => enabled.has(type))
+  return resolved.length ? resolved : PURCHASE_ENABLED_ORDER_TYPES_DEFAULT
+}
+
+const getEnabledPurchaseOrderTypes = () => normalizePurchaseEnabledOrderTypes(process.env.PURCHASE_ENABLED_ORDER_TYPES)
+const getDefaultPurchaseOrderType = (enabledOrderTypes) => {
+  const enabled = Array.isArray(enabledOrderTypes) ? enabledOrderTypes : getEnabledPurchaseOrderTypes()
+  if (enabled.includes(ORDER_TYPE_WARRANTY)) return ORDER_TYPE_WARRANTY
+  if (enabled.includes(ORDER_TYPE_NO_WARRANTY)) return ORDER_TYPE_NO_WARRANTY
+  return ORDER_TYPE_WARRANTY
 }
 
 const getPurchasePlans = () => {
@@ -153,12 +194,6 @@ const getPurchasePlans = () => {
   const noWarrantyProductName = String(
     process.env.PURCHASE_NO_WARRANTY_PRODUCT_NAME || `${productName}（无质保）`
   ).trim() || `${productName}（无质保）`
-
-  const antiBanAmount = formatMoney(process.env.PURCHASE_ANTI_BAN_PRICE ?? '10.00') || '10.00'
-  const antiBanServiceDays = Math.max(1, toInt(process.env.PURCHASE_ANTI_BAN_SERVICE_DAYS, serviceDays))
-  const antiBanProductName = String(
-    process.env.PURCHASE_ANTI_BAN_PRODUCT_NAME || `${productName}(防封禁)`
-  ).trim() || `${productName}(防封禁)`
 
   return {
     expireMinutes,
@@ -174,22 +209,32 @@ const getPurchasePlans = () => {
         productName: noWarrantyProductName,
         amount: noWarrantyAmount,
         serviceDays: noWarrantyServiceDays
-      },
-      antiBan: {
-        key: ORDER_TYPE_ANTI_BAN,
-        productName: antiBanProductName,
-        amount: antiBanAmount,
-        serviceDays: antiBanServiceDays
       }
     }
   }
+}
+
+const getPurchaseOrderExpireMinutes = () => Math.max(5, toInt(process.env.PURCHASE_ORDER_EXPIRE_MINUTES, 15))
+
+const parseProductCodeChannels = (product, channelsByKey) => {
+  const { list } = normalizeCodeChannels(product?.codeChannels)
+  const resolved = []
+  const seen = new Set()
+  for (const token of list) {
+    const key = normalizeChannelKey(token, '')
+    if (!key || seen.has(key)) continue
+    const channel = channelsByKey?.get?.(key)
+    if (!channel || !channel.isActive) continue
+    seen.add(key)
+    resolved.push(key)
+  }
+  return resolved
 }
 
 const getPurchasePlan = (orderType) => {
   const normalized = normalizeOrderType(orderType)
   const { plans } = getPurchasePlans()
   if (normalized === ORDER_TYPE_NO_WARRANTY) return plans.noWarranty
-  if (normalized === ORDER_TYPE_ANTI_BAN) return plans.antiBan
   return plans.warranty
 }
 
@@ -633,35 +678,38 @@ const cleanupExpiredOrders = (db, { expireMinutes }) => {
   return released
 }
 
-const getTodayAvailableCodeCount = (db) => {
+const getTodayAvailableCodeCount = (db, { channel } = {}) => {
+  const resolvedChannel = String(channel || CODE_CHANNEL_COMMON).trim().toLowerCase() || CODE_CHANNEL_COMMON
   const result = db.exec(
     `
-      SELECT COUNT(*)
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND rc.channel = 'common'
-        AND rc.account_email IS NOT NULL
+	      SELECT COUNT(*)
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
+	        AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
         AND COALESCE(ga.is_demoted, 0) = 0
         AND ga.user_count < 5
         AND DATE(ga.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-    `
+    `,
+    [resolvedChannel]
   )
   return Number(result[0]?.values?.[0]?.[0] || 0)
 }
 
-const reserveTodayCode = (db, { orderNo, email }) => {
+const reserveTodayCode = (db, { orderNo, email, channel } = {}) => {
+  const resolvedChannel = String(channel || CODE_CHANNEL_COMMON).trim().toLowerCase() || CODE_CHANNEL_COMMON
   const row = db.exec(
     `
-      SELECT rc.id, rc.code, rc.account_email
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND rc.channel = 'common'
-        AND rc.account_email IS NOT NULL
+	      SELECT rc.id, rc.code, rc.account_email
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND COALESCE(NULLIF(lower(trim(rc.channel)), ''), 'common') = ?
+	        AND rc.account_email IS NOT NULL
         AND ga.is_open = 1
         AND COALESCE(ga.is_demoted, 0) = 0
         AND ga.user_count < 5
@@ -670,7 +718,8 @@ const reserveTodayCode = (db, { orderNo, email }) => {
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
       ORDER BY rc.created_at ASC
       LIMIT 1
-    `
+    `,
+    [resolvedChannel]
   )[0]?.values?.[0]
 
   if (!row) return null
@@ -744,7 +793,9 @@ const fetchOrder = (db, orderNo) => {
 	             invite_reward_points,
 	             invite_rewarded_at,
 	             buyer_reward_points,
-	             buyer_rewarded_at
+	             buyer_rewarded_at,
+               product_key,
+               code_channel
 	      FROM purchase_orders
 	      WHERE order_no = ?
 	      LIMIT 1
@@ -790,7 +841,9 @@ const fetchOrder = (db, orderNo) => {
 	    inviteRewardPoints: row[33] != null ? Number(row[33]) : null,
 	    inviteRewardedAt: row[34] || null,
 	    buyerRewardPoints: row[35] != null ? Number(row[35]) : null,
-	    buyerRewardedAt: row[36] || null
+	    buyerRewardedAt: row[36] || null,
+      productKey: row[37] || null,
+      codeChannel: row[38] || null
 	  }
 	}
 
@@ -1070,10 +1123,13 @@ const handlePaidOrder = async (db, orderNo, { payType, tradeNo, paidAt, notifyPa
         saveDatabase()
       } else {
         try {
+          const lockedChannel = updatedOrder.codeChannel
+            ? String(updatedOrder.codeChannel).trim().toLowerCase()
+            : resolvePurchaseCodeChannel(updatedOrder.orderType)
           const redemption = await redeemCodeInternal({
             email: updatedOrder.email,
             code: updatedOrder.code,
-            channel: 'common',
+            channel: lockedChannel,
             orderType: updatedOrder.orderType
           })
           db.run(
@@ -1555,12 +1611,17 @@ router.delete('/admin/products/:id', authenticateToken, requireMenu('product_man
 router.post('/orders', async (req, res) => {
   const email = normalizeEmail(req.body?.email)
   const payType = String(req.body?.type || req.body?.payType || '').trim()
-  const orderType = normalizeOrderType(req.body?.orderType || req.body?.order_type)
+  const rawProductKey = req.body?.productKey ?? req.body?.product_key
+  const productKey = rawProductKey == null || String(rawProductKey).trim() === '' ? '' : normalizeProductKey(rawProductKey)
+  const requestedOrderType = parseOrderType(req.body?.orderType || req.body?.order_type)
   const userIdFromToken = getUserIdFromAuthorization(req)
 
   if (!email) return res.status(400).json({ error: '请输入邮箱地址' })
   if (!EMAIL_REGEX.test(email)) return res.status(400).json({ error: '请输入有效的邮箱地址' })
   if (!['alipay', 'wxpay'].includes(payType)) return res.status(400).json({ error: '请选择支付方式' })
+  if (rawProductKey != null && String(rawProductKey).trim() && !productKey) {
+    return res.status(400).json({ error: 'productKey 不合法' })
+  }
 
   const { pid, key, baseUrl } = await getZpayConfig()
   if (!pid || !key) {
@@ -1579,34 +1640,61 @@ router.post('/orders', async (req, res) => {
       cleanupExpiredOrders(db, { expireMinutes: purchasePlans.expireMinutes })
       purchasePlan = getManagedPurchasePlan(db, orderType)
 
-      const antiBan = isAntiBanOrderType(orderType)
-      const availableCount = antiBan ? getDemotedAvailableCodeCount(db) : getTodayAvailableCodeCount(db)
-      if (availableCount <= 0) {
-        return { ok: false, error: '今日库存不足，请稍后再试' }
+      if (productKey) {
+        product = await getPurchaseProductByKey(db, productKey)
+      } else if (requestedOrderType) {
+        product = await getPurchaseProductByKey(db, requestedOrderType)
       }
 
-      const reserved = antiBan
-        ? reserveDemotedCode(db, { orderNo, email })
-        : reserveTodayCode(db, { orderNo, email })
+      if (!product) {
+        const products = await listPurchaseProducts(db, { activeOnly: true })
+        product = products?.[0] || null
+      }
+
+      if (!product || !product.isActive) {
+        return { ok: false, status: 400, error: '该商品已下架' }
+      }
+
+      const orderType = normalizeOrderType(product.orderType)
+      if (isAntiBanOrderType(orderType)) {
+        return { ok: false, status: 400, error: '防封禁方案已下线' }
+      }
+
+      const candidateChannels = parseProductCodeChannels(product, channelsByKey)
+      if (!candidateChannels.length) {
+        return { ok: false, status: 500, error: '商品渠道配置错误，请联系管理员' }
+      }
+
+      let reserved = null
+      let lockedChannel = ''
+      for (const channel of candidateChannels) {
+        reserved = reserveTodayCode(db, { orderNo, email, channel })
+        if (reserved) {
+          lockedChannel = channel
+          break
+        }
+      }
       if (!reserved) {
-        return { ok: false, error: '今日库存不足，请稍后再试' }
+        return { ok: false, status: 409, error: '今日库存不足，请稍后再试' }
       }
 
       db.run(
         `
           INSERT INTO purchase_orders (
-            user_id, order_no, email, product_name, amount, service_days, order_type, pay_type, status,
+            user_id, order_no, email, product_key, product_name, amount, service_days, order_type, code_channel, pay_type, status,
             code_id, code, code_account_email, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))
         `,
         [
           userIdFromToken,
           orderNo,
           email,
-          purchasePlan.productName,
-          purchasePlan.amount,
-          purchasePlan.serviceDays,
+          product.productKey,
+          product.productName,
+          product.amount,
+          product.serviceDays,
           orderType,
+          lockedChannel,
           payType,
           reserved.codeId,
           reserved.code,
@@ -1615,11 +1703,17 @@ router.post('/orders', async (req, res) => {
       )
       saveDatabase()
 
-      return { ok: true, reserved }
+      return { ok: true, reserved, product, orderType, codeChannel: lockedChannel }
     })
 
     if (!reservation.ok) {
-      return res.status(409).json({ error: reservation.error })
+      return res.status(reservation.status || 409).json({ error: reservation.error })
+    }
+
+    const purchasePlan = {
+      productName: reservation.product.productName,
+      amount: reservation.product.amount,
+      serviceDays: reservation.product.serviceDays
     }
     if (!purchasePlan) {
       return res.status(500).json({ error: '商品配置异常，请联系管理员' })
@@ -1746,6 +1840,7 @@ router.post('/orders', async (req, res) => {
       amount: purchasePlan.amount,
       productName: purchasePlan.productName,
       orderType,
+      productKey: productKeyUsed,
       payType,
       payUrl: data.payurl || null,
       qrcode: data.qrcode || null,
@@ -2213,7 +2308,7 @@ router.get('/admin/orders', async (req, res) => {
   try {
     const db = await getDatabase()
     const page = Math.max(1, Number(req.query.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 15))
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10))
     const search = (req.query.search || '').trim().toLowerCase()
     const status = req.query.status // 'pending_payment' | 'paid' | 'refunded' | 'expired' | 'failed' | undefined
 

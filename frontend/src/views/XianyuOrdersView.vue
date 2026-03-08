@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { AlertTriangle, ClipboardCopy, Cookie as CookieIcon, Loader2, PenSquare, RefreshCw, Trash2, ChevronLeft, ChevronRight, Search } from 'lucide-vue-next'
+import { AlertTriangle, Cookie as CookieIcon, Loader2, PenSquare, RefreshCw, Trash2, ChevronLeft, ChevronRight, Search } from 'lucide-vue-next'
 import { authService, redemptionCodeService, xianyuService, type XianyuOrder, type XianyuStats, type XianyuStatus } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { useAppConfigStore } from '@/stores/appConfig'
@@ -53,6 +53,12 @@ const showRedeemDialog = ref(false)
 const redeemTargetOrder = ref<XianyuOrder | null>(null)
 const redeemEmail = ref('')
 const redeemingOrderId = ref<number | null>(null)
+
+const showBindDialog = ref(false)
+const bindTargetOrder = ref<XianyuOrder | null>(null)
+const bindCode = ref('')
+const bindEmail = ref('')
+const bindingOrderId = ref<number | null>(null)
 
 const showRestockDialog = ref(false)
 const restockMessage = ref('')
@@ -336,6 +342,61 @@ const closeRedeemDialog = () => {
   redeemEmail.value = ''
 }
 
+const openBindDialog = (order: XianyuOrder) => {
+  bindTargetOrder.value = order
+  bindCode.value = String(order.redemptionCode || order.assignedCode || '').trim()
+  bindEmail.value = String(order.userEmail || '').trim()
+  showBindDialog.value = true
+}
+
+const closeBindDialog = () => {
+  showBindDialog.value = false
+  bindTargetOrder.value = null
+  bindCode.value = ''
+  bindEmail.value = ''
+  bindingOrderId.value = null
+}
+
+const handleBindCode = async () => {
+  if (!bindTargetOrder.value) {
+    showErrorToast('未选择订单')
+    return
+  }
+
+  const code = bindCode.value.trim().toUpperCase()
+  if (!code) {
+    showWarningToast('请输入兑换码')
+    return
+  }
+
+  const email = bindEmail.value.trim()
+  if (email && !isEmail(email)) {
+    showWarningToast('邮箱格式不正确')
+    return
+  }
+
+  bindingOrderId.value = bindTargetOrder.value.id
+  try {
+    const response = await xianyuService.bindOrderCode(bindTargetOrder.value.id, {
+      code,
+      ...(email ? { email } : {})
+    })
+
+    const updatedOrder: XianyuOrder | null | undefined = response?.order
+    if (updatedOrder) {
+      applyUpdatedOrder(updatedOrder)
+    }
+    showSuccessToast(response?.message || '绑定成功')
+    closeBindDialog()
+    await fetchStatus()
+  } catch (err: any) {
+    const message = err?.response?.data?.error || err?.response?.data?.message || err?.message || '绑定失败，请稍后再试'
+    showErrorToast(message)
+  } finally {
+    bindingOrderId.value = null
+  }
+}
+
 const isXianyuCodeOutOfStock = (err: any) => {
   const errorCode = err?.response?.data?.errorCode
   return (
@@ -373,7 +434,6 @@ const redeemOrder = async (order: XianyuOrder, email: string) => {
     const response = await redemptionCodeService.redeemXianyuOrder({
       email: normalizedEmail,
       orderId: order.orderId,
-      strictToday: true
     })
 
     const updatedOrder: XianyuOrder | undefined = response?.data?.order
@@ -454,12 +514,12 @@ onUnmounted(() => {
 <template>
   <div class="space-y-8">
     <Teleport v-if="teleportReady" to="#header-actions">
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap justify-end">
         <Button variant="outline" class="h-10 border-gray-200 hover:bg-white hover:text-blue-600" @click="refreshAll" :disabled="refreshing">
           <RefreshCw class="w-4 h-4 mr-2" :class="{ 'animate-spin': refreshing }" />
-          刷新
+          刷新列表
         </Button>
-        <div class="h-6 w-px bg-gray-300"></div>
+        <div class="hidden sm:block h-6 w-px bg-gray-300"></div>
         <Button variant="outline" class="h-10 border-gray-200 bg-white" @click="openCookieDialog">
           <CookieIcon class="w-4 h-4 mr-2" />
           凭证
@@ -589,8 +649,16 @@ onUnmounted(() => {
                       <Loader2 v-if="redeemingOrderId === order.id" class="w-3.5 h-3.5 mr-1 animate-spin" />
                       {{ order.isUsed ? '已核销' : (isOrderClosed(order) ? '已关闭' : '核销') }}
                     </Button>
-                    <Button size="icon" variant="ghost" class="h-8 w-8 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg" @click="copyOrderId(order.orderId)">
-                      <ClipboardCopy class="w-4 h-4" />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      class="h-8 rounded-lg text-xs border-gray-200"
+                      :disabled="order.isUsed || bindingOrderId === order.id"
+                      @click="openBindDialog(order)"
+                      title="绑定已兑换的兑换码到该订单"
+                    >
+                      <Loader2 v-if="bindingOrderId === order.id" class="w-3.5 h-3.5 mr-1 animate-spin" />
+                      绑定码
                     </Button>
                     <Button
                       size="icon"
@@ -723,6 +791,61 @@ onUnmounted(() => {
             class="rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200 hover:bg-blue-700 px-6"
           >
             {{ redeemingOrderId === redeemTargetOrder?.id ? '核销中...' : '确认核销' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 绑定兑换码弹窗 -->
+    <Dialog v-model:open="showBindDialog">
+      <DialogContent class="sm:max-w-[520px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl">
+        <DialogHeader class="px-8 pt-8 pb-4">
+          <DialogTitle class="text-2xl font-bold text-gray-900">绑定兑换码</DialogTitle>
+        </DialogHeader>
+
+        <div class="px-8 pb-8 space-y-6">
+          <div v-if="bindTargetOrder" class="p-4 bg-gray-50 rounded-2xl border border-gray-100 space-y-2">
+            <div class="flex justify-between items-center">
+              <span class="text-xs text-gray-500 font-semibold uppercase">Order</span>
+              <span class="font-mono font-medium text-gray-900">{{ bindTargetOrder.orderId }}</span>
+            </div>
+            <div v-if="bindTargetOrder.nickname" class="flex justify-between items-center">
+              <span class="text-xs text-gray-500 font-semibold uppercase">User</span>
+              <span class="font-medium text-gray-900 truncate max-w-[320px]">{{ bindTargetOrder.nickname }}</span>
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换码</Label>
+            <Input
+              v-model="bindCode"
+              placeholder="XXXX-XXXX-XXXX"
+              class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 font-mono"
+            />
+            <p class="text-xs text-gray-400">已在「兑换码管理」完成兑换后，把兑换码粘贴到这里绑定到订单。</p>
+          </div>
+
+          <div class="space-y-2">
+            <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">受邀邮箱（可选）</Label>
+            <Input
+              v-model="bindEmail"
+              type="email"
+              placeholder="name@example.com"
+              class="h-11 bg-gray-50 border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500"
+            />
+            <p class="text-xs text-gray-400">留空则尝试从兑换码的 redeemed_by 解析邮箱。</p>
+          </div>
+        </div>
+
+        <DialogFooter class="px-8 pb-8 pt-0">
+          <Button variant="ghost" @click="closeBindDialog" class="rounded-xl text-gray-500">取消</Button>
+          <Button
+            :disabled="!bindTargetOrder || !bindCode.trim() || bindingOrderId === bindTargetOrder?.id"
+            @click="handleBindCode"
+            class="rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200 hover:bg-blue-700 px-6"
+          >
+            <Loader2 v-if="bindingOrderId === bindTargetOrder?.id" class="w-4 h-4 mr-2 animate-spin" />
+            {{ bindingOrderId === bindTargetOrder?.id ? '绑定中...' : '确认绑定' }}
           </Button>
         </DialogFooter>
       </DialogContent>

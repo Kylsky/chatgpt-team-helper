@@ -7,16 +7,38 @@ import { filterAdminMenuTreeByFeatureFlags, getFallbackAdminMenuTree, normalizeA
 import { Menu, X, LogOut, ChevronRight, Github } from 'lucide-vue-next'
 import { useBreakpoints } from '@vueuse/core'
 import { useAppConfigStore } from '@/stores/appConfig'
+import { useAnnouncementsStore } from '@/stores/announcements'
+import AnnouncementBell from '@/components/AnnouncementBell.vue'
 
 const router = useRouter()
 const route = useRoute()
 const appConfigStore = useAppConfigStore()
+const announcementsStore = useAnnouncementsStore()
 
 const currentUser = ref(authService.getCurrentUser())
 const githubRepoUrl = 'https://github.com/Kylsky/chatgpt-team-helper'
 
+let unreadPollTimer: number | null = null
+
+const stopUnreadPolling = () => {
+  if (unreadPollTimer === null) return
+  clearInterval(unreadPollTimer)
+  unreadPollTimer = null
+}
+
+const startUnreadPolling = () => {
+  stopUnreadPolling()
+  unreadPollTimer = window.setInterval(() => {
+    announcementsStore.refreshUnreadCount()
+  }, 60_000)
+}
+
 const syncCurrentUser = () => {
   currentUser.value = authService.getCurrentUser()
+  if (!authService.isAuthenticated()) {
+    announcementsStore.reset()
+    stopUnreadPolling()
+  }
 }
 
 onMounted(() => {
@@ -25,8 +47,12 @@ onMounted(() => {
     try {
       const me = await userService.getMe()
       authService.setCurrentUser(me)
+      await announcementsStore.refreshUnreadCount()
+      startUnreadPolling()
     } catch (error: any) {
       if (error?.response?.status === 401 || error?.response?.status === 403) {
+        announcementsStore.reset()
+        stopUnreadPolling()
         authService.logout()
         router.push('/login')
       }
@@ -35,6 +61,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopUnreadPolling()
   window.removeEventListener('auth-updated', syncCurrentUser)
 })
 
@@ -81,6 +108,8 @@ const handleMenuClick = () => {
 }
 
 const handleLogout = () => {
+  announcementsStore.reset()
+  stopUnreadPolling()
   authService.logout()
   router.push('/login')
 }
@@ -332,6 +361,7 @@ const isGroupExpanded = (key: string) => {
             </p>
             <p class="text-xs text-gray-500 truncate">{{ roleLabel }}</p>
           </div>
+          <AnnouncementBell />
         </div>
         <Button
           variant="ghost"
@@ -397,7 +427,7 @@ const isGroupExpanded = (key: string) => {
   transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/* 内容进入动画 */
+/* 内容进入动画 — 使用 backwards 而非 forwards，避免动画结束后残留 transform 破坏后代 sticky 定位 */
 @keyframes fadeInUp {
   from {
     opacity: 0;
@@ -410,7 +440,7 @@ const isGroupExpanded = (key: string) => {
 }
 
 .animate-fade-in-up {
-  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 /* 隐藏滚动条但保留功能 (可选) */

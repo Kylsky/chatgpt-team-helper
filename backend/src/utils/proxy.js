@@ -111,3 +111,29 @@ export function loadProxyList({ urlsEnvKey, fileEnvKey } = {}) {
 
   return proxies
 }
+
+const fnv1a32 = (value) => {
+  const input = String(value ?? '')
+  let hash = 0x811c9dc5
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash >>> 0
+}
+
+export function pickProxyByHash(proxies = [], key, { attempt = 1 } = {}) {
+  const list = Array.isArray(proxies) ? proxies : []
+  if (list.length === 0) return null
+
+  const normalizedKey = String(key ?? '').trim()
+  const attemptOffset = Math.max(0, Number(attempt || 1) - 1)
+
+  if (!normalizedKey) {
+    return list[attemptOffset % list.length] || null
+  }
+
+  const base = fnv1a32(normalizedKey)
+  const index = (base + attemptOffset) % list.length
+  return list[index] || null
+}

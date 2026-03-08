@@ -3,14 +3,14 @@ import { computed, onBeforeUnmount, watch, ref } from 'vue'
 import AppleCard from '@/components/ui/apple/Card.vue'
 import AppleInput from '@/components/ui/apple/Input.vue'
 import AppleButton from '@/components/ui/apple/Button.vue'
-import { purchaseService, type PurchaseCreateOrderResponse, type PurchaseOrderQueryResponse, type PurchaseOrderType, type PurchasePlan } from '@/services/api'
+import { purchaseService, type PurchaseCreateOrderResponse, type PurchaseOrderQueryResponse, type PurchasePlan } from '@/services/api'
 import { EMAIL_REGEX } from '@/lib/validation'
 import { useToast } from '@/components/ui/toast'
 import { AlertCircle, X } from 'lucide-vue-next'
 
 const props = defineProps<{
   open: boolean
-  orderType: PurchaseOrderType
+  productKey: string
   plan: PurchasePlan | null
   availableCount: number
 }>()
@@ -180,7 +180,7 @@ const handleCreateOrder = async () => {
     order.value = await purchaseService.createOrder({
       email: normalizedEmail,
       type: payType.value,
-      orderType: props.orderType,
+      productKey: props.productKey,
     })
     await refreshOrder()
     startAutoRefresh()
@@ -237,7 +237,7 @@ watch(
 )
 
 watch(
-  () => props.orderType,
+  () => props.productKey,
   () => {
     resetOrderState()
   }
@@ -485,4 +485,3 @@ onBeforeUnmount(() => {
     </Transition>
   </Teleport>
 </template>
-

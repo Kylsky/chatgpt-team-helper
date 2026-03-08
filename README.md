@@ -1,12 +1,17 @@
 # ChatGPT Team Helper
-<img width="3840" height="1920" alt="image" src="https://github.com/user-attachments/assets/e5fcd950-7844-4ff7-be00-28246024a847" />
-
-<img width="3840" height="1922" alt="image" src="https://github.com/user-attachments/assets/06e169e2-dfd3-4324-82ef-950bc96102c8" />
+[![Telegram 交流群](https://img.shields.io/badge/Telegram-交流群-blue?logo=telegram)](https://t.me/+W7iplSdBGXhlMDc1)
+[![Linux DO](https://img.shields.io/badge/Linux%20DO-Yelo-green?logo=discourse)](https://linux.do/u/yelo/summary)
 
 一个多渠道 Team 账号管理与兑换平台，支持多种订单渠道接入、自动发货、积分体系和权限管理。使用 Vue 3、Node.js、shadcn-vue 和 SQLite 构建。
 
-[![Telegram 交流群](https://img.shields.io/badge/Telegram-交流群-blue?logo=telegram)](https://t.me/+W7iplSdBGXhlMDc1)
-[![Linux DO](https://img.shields.io/badge/Linux%20DO-Yelo-green?logo=discourse)](https://linux.do/u/yelo/summary)
+<img width="3840" height="1920" alt="image" src="https://github.com/user-attachments/assets/e5fcd950-7844-4ff7-be00-28246024a847" />
+
+<img width="3840" height="1926" alt="image" src="https://github.com/user-attachments/assets/5d8f4107-71ed-46c7-86c5-46cb02dfacbc" />
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Kylsky/chatgpt-team-helper&type=Date)](https://star-history.com/#Kylsky/chatgpt-team-helper&Date)
 
 ## 功能特性
 
@@ -26,7 +31,7 @@
 - **补号/账号恢复**：历史订单找回与重新兑换
 
 ### 订单管理
-- **支付订单**：Zpay 支付网关集成，支持多种商品类型（标准、无质保、防封禁）
+- **支付订单**：Zpay 支付网关集成，支持多种商品类型（标准、无质保）
 - **Credit 订单**：Linux DO Credit 支付网关集成
 - **小红书订单**：API 自动同步 + 手动导入，定时轮询
 - **闲鱼订单**：API 同步 + WebSocket 实时监听 + IM 自动发货
@@ -456,10 +461,10 @@ PURCHASE_NO_WARRANTY_PRODUCT_NAME=通用渠道激活码（无质保）
 PURCHASE_NO_WARRANTY_PRICE=5.00
 PURCHASE_NO_WARRANTY_SERVICE_DAYS=30
 
-# 防封禁商品
-PURCHASE_ANTI_BAN_PRODUCT_NAME=通用渠道激活码(防封禁)
-PURCHASE_ANTI_BAN_PRICE=10.00
-PURCHASE_ANTI_BAN_SERVICE_DAYS=30
+# 防封禁商品（已下线，配置已弃用）
+# PURCHASE_ANTI_BAN_PRODUCT_NAME=通用渠道激活码(防封禁)
+# PURCHASE_ANTI_BAN_PRICE=10.00
+# PURCHASE_ANTI_BAN_SERVICE_DAYS=30
 
 # 订单过期时间（分钟）
 PURCHASE_ORDER_EXPIRE_MINUTES=15
@@ -475,7 +480,7 @@ TURNSTILE_TIMEOUT_MS=5000
 
 ### 代理配置
 
-用于 OpenAI API 调用、开放账号上车、邀请同步等场景。
+用于 OpenAI API 调用、开放账号上车、邀请同步等场景（同一账号会稳定散列到某个代理，以便均衡分摊）。
 
 ```env
 # 代理池（逗号分隔，支持 http/https/socks5/socks5h）

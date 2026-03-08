@@ -7,6 +7,7 @@ import { useAppConfigStore } from '@/stores/appConfig'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import NativeDateInput from '@/components/ui/apple/NativeDateInput.vue'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -19,7 +20,7 @@ const error = ref('')
 const overview = ref<AdminStatsOverviewResponse | null>(null)
 
 type RangePreset = 'today' | '7d' | '30d' | 'custom'
-const rangePreset = ref<RangePreset>('7d')
+const rangePreset = ref<RangePreset>('today')
 const rangeFrom = ref('')
 const rangeTo = ref('')
 const applyingPreset = ref(false)
@@ -63,7 +64,7 @@ watch([rangeFrom, rangeTo], () => {
   if (rangePreset.value !== 'custom') {
     rangePreset.value = 'custom'
   }
-})
+}, { flush: 'sync' })
 
 const locale = computed(() => appConfigStore.locale || 'zh-CN')
 const numberFmt = computed(() => new Intl.NumberFormat(locale.value))
@@ -79,10 +80,20 @@ const formatPercent = (value?: number | null) => {
   return `${Math.round(normalized * 1000) / 10}%`
 }
 
+const totalRevenue = computed(() => {
+  if (!overview.value) return 0
+  return (
+    Number(overview.value.purchaseOrders?.paidAmount || 0) +
+    Number(overview.value.xhsOrders?.amount?.range || 0) +
+    Number(overview.value.xianyuOrders?.amount?.range || 0)
+  )
+})
+
 const channelLabel = (channel: string) => {
   const normalized = String(channel || '').trim()
   const mapping: Record<string, string> = {
     common: '通用',
+    paypal: 'PayPal',
     'linux-do': 'Linux DO',
     xhs: '小红书',
     xianyu: '闲鱼',
@@ -134,12 +145,12 @@ onMounted(async () => {
 <template>
   <div class="space-y-8">
     <Teleport v-if="teleportReady" to="#header-actions">
-      <div class="flex flex-col sm:flex-row sm:items-end gap-3">
-        <div class="flex items-end gap-2">
-          <div class="space-y-1">
+      <div class="w-full flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-end">
+        <div class="grid grid-cols-2 gap-3 w-full sm:w-auto sm:flex sm:items-end sm:gap-2">
+          <div class="space-y-1 col-span-2 sm:col-span-1">
             <Label class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">范围</Label>
             <Select v-model="rangePreset">
-              <SelectTrigger class="h-10 w-[120px] bg-white border-gray-200 rounded-xl">
+              <SelectTrigger class="h-10 w-full sm:w-[120px] bg-white border-gray-200 rounded-xl">
                 <SelectValue placeholder="选择范围" />
               </SelectTrigger>
               <SelectContent>
@@ -153,18 +164,18 @@ onMounted(async () => {
 
           <div class="space-y-1">
             <Label class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">开始</Label>
-            <Input v-model="rangeFrom" type="date" class="h-10 bg-white border-gray-200 rounded-xl" />
+            <NativeDateInput v-model="rangeFrom" placeholder="开始日期" class="w-full sm:w-[160px]" />
           </div>
 
           <div class="space-y-1">
             <Label class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">结束</Label>
-            <Input v-model="rangeTo" type="date" class="h-10 bg-white border-gray-200 rounded-xl" />
+            <NativeDateInput v-model="rangeTo" placeholder="结束日期" class="w-full sm:w-[160px]" />
           </div>
         </div>
 
         <Button
           variant="outline"
-          class="h-10 rounded-xl border-gray-200 bg-white"
+          class="h-10 w-full rounded-xl border-gray-200 bg-white sm:w-auto"
           :disabled="loading"
           @click="loadOverview"
         >
@@ -201,6 +212,38 @@ onMounted(async () => {
         <div v-if="overview" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <Card class="rounded-2xl border-gray-100">
             <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">总营收</p>
+              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoney(totalRevenue) }}</p>
+              <p class="text-xs text-gray-500">按区间汇总（支付 + 小红书 + 闲鱼）</p>
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">支付收入（区间）</p>
+              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoney(overview.purchaseOrders.paidAmount) }}</p>
+              <p class="text-xs text-gray-500">已支付 {{ formatNumber(overview.purchaseOrders.paid) }} 单</p>
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">小红书订单金额（区间）</p>
+              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoneyInt(overview.xhsOrders.amount.range) }}</p>
+              <p class="text-xs text-gray-500">今日 ¥{{ formatMoneyInt(overview.xhsOrders.amount.today) }}</p>
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">闲鱼订单金额（区间）</p>
+              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoneyInt(overview.xianyuOrders.amount.range) }}</p>
+              <p class="text-xs text-gray-500">今日 ¥{{ formatMoneyInt(overview.xianyuOrders.amount.today) }}</p>
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
               <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">用户</p>
               <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.users.total) }}</p>
               <p class="text-xs text-gray-500">区间新增 {{ formatNumber(overview.users.created) }}</p>
@@ -209,57 +252,40 @@ onMounted(async () => {
 
           <Card class="rounded-2xl border-gray-100">
             <CardContent class="p-5 space-y-2">
-              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">账号席位</p>
-              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.gptAccounts.usedSeats) }} / {{ formatNumber(overview.gptAccounts.totalSeats) }}</p>
-              <p class="text-xs text-gray-500">利用率 {{ formatPercent(overview.gptAccounts.seatUtilization) }}</p>
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">通用渠道今日库存</p>
+              <p class="text-2xl font-bold text-gray-900">
+                {{ formatNumber(overview.redemptionCodes.todayCommon.unused) }} / {{ formatNumber(overview.redemptionCodes.todayCommon.total) }}
+              </p>
             </CardContent>
           </Card>
 
           <Card class="rounded-2xl border-gray-100">
             <CardContent class="p-5 space-y-2">
-              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">兑换码库存</p>
-              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.redemptionCodes.unused) }}</p>
-              <p class="text-xs text-gray-500">总量 {{ formatNumber(overview.redemptionCodes.total) }}</p>
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">小红书今日库存</p>
+              <p class="text-2xl font-bold text-gray-900">
+                {{ formatNumber(overview.redemptionCodes.todayXhs.unused) }} / {{ formatNumber(overview.redemptionCodes.todayXhs.total) }}
+              </p>
             </CardContent>
           </Card>
 
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">支付收入（区间）</p>
-	              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoney(overview.purchaseOrders.paidAmount) }}</p>
-	              <p class="text-xs text-gray-500">已支付 {{ formatNumber(overview.purchaseOrders.paid) }} 单</p>
-	            </CardContent>
-	          </Card>
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">闲鱼今日库存</p>
+              <p class="text-2xl font-bold text-gray-900">
+                {{ formatNumber(overview.redemptionCodes.todayXianyu.unused) }} / {{ formatNumber(overview.redemptionCodes.todayXianyu.total) }}
+              </p>
+            </CardContent>
+          </Card>
 
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">小红书订单金额（区间）</p>
-	              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoneyInt(overview.xhsOrders.amount.range) }}</p>
-	              <p class="text-xs text-gray-500">今日 ¥{{ formatMoneyInt(overview.xhsOrders.amount.today) }}</p>
-	            </CardContent>
-	          </Card>
-
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">闲鱼订单金额（区间）</p>
-	              <p class="text-2xl font-bold text-gray-900">¥{{ formatMoneyInt(overview.xianyuOrders.amount.range) }}</p>
-	              <p class="text-xs text-gray-500">今日 ¥{{ formatMoneyInt(overview.xianyuOrders.amount.today) }}</p>
-	            </CardContent>
-	          </Card>
-
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">小红书今日库存</p>
-	              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.redemptionCodes.todayXhs.unused) }} / {{ formatNumber(overview.redemptionCodes.todayXhs.total) }}</p>
-	            </CardContent>
-	          </Card>
-
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">闲鱼今日库存</p>
-	              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.redemptionCodes.todayXianyu.unused) }} / {{ formatNumber(overview.redemptionCodes.todayXianyu.total) }}</p>
-	            </CardContent>
-	          </Card>
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">支付订单今日</p>
+              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.purchaseOrders.today.pending) }}</p>
+              <p class="text-xs text-gray-500">
+                待支付（今日总 {{ formatNumber(overview.purchaseOrders.today.total) }} · 已付 {{ formatNumber(overview.purchaseOrders.today.paid) }}）
+              </p>
+            </CardContent>
+          </Card>
 
           <Card class="rounded-2xl border-gray-100">
             <CardContent class="p-5 space-y-2">
@@ -277,13 +303,15 @@ onMounted(async () => {
             </CardContent>
           </Card>
 
-	          <Card class="rounded-2xl border-gray-100">
-	            <CardContent class="p-5 space-y-2">
-	              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">提现待处理</p>
-	              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.pointsWithdrawals.pending) }}</p>
-              <p class="text-xs text-gray-500">{{ formatNumber(overview.pointsWithdrawals.pendingPoints) }} 积分 · ¥{{ formatMoney(overview.pointsWithdrawals.pendingCash) }}</p>
+          <Card class="rounded-2xl border-gray-100">
+            <CardContent class="p-5 space-y-2">
+              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">提现待处理</p>
+              <p class="text-2xl font-bold text-gray-900">{{ formatNumber(overview.pointsWithdrawals.pending) }}</p>
+              <p class="text-xs text-gray-500">
+                {{ formatNumber(overview.pointsWithdrawals.pendingPoints) }} 积分 · ¥{{ formatMoney(overview.pointsWithdrawals.pendingCash) }}
+              </p>
             </CardContent>
-	          </Card>
+          </Card>
         </div>
 
         <div v-if="overview" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -318,7 +346,7 @@ onMounted(async () => {
           <div class="rounded-2xl border border-gray-100 overflow-hidden">
             <div class="px-5 py-4 bg-gray-50/50 border-b border-gray-100">
               <h4 class="text-sm font-semibold text-gray-900">订单概览（区间）</h4>
-              <p class="text-xs text-gray-400 mt-0.5">支付订单 + Credit 订单</p>
+              <p class="text-xs text-gray-400 mt-0.5">支付订单 + Credit 订单 + 小红书 + 闲鱼</p>
             </div>
             <div class="p-5 space-y-4">
               <div class="flex items-center justify-between">
@@ -343,6 +371,36 @@ onMounted(async () => {
                 <div class="text-right">
                   <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">已付金额</p>
                   <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoney(overview.creditOrders.paidAmount) }}</p>
+                </div>
+              </div>
+
+              <div class="h-px bg-gray-100"></div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">小红书订单</p>
+                  <p class="text-sm text-gray-600 mt-1">
+                    总 {{ formatNumber(overview.xhsOrders.total) }} · 待核销 {{ formatNumber(overview.xhsOrders.pending) }} · 已核销 {{ formatNumber(overview.xhsOrders.used) }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">订单金额</p>
+                  <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoneyInt(overview.xhsOrders.amount.range) }}</p>
+                </div>
+              </div>
+
+              <div class="h-px bg-gray-100"></div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">闲鱼订单</p>
+                  <p class="text-sm text-gray-600 mt-1">
+                    总 {{ formatNumber(overview.xianyuOrders.total) }} · 待核销 {{ formatNumber(overview.xianyuOrders.pending) }} · 已核销 {{ formatNumber(overview.xianyuOrders.used) }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400 font-semibold uppercase tracking-wider">订单金额</p>
+                  <p class="text-lg font-bold text-gray-900 mt-1">¥{{ formatMoneyInt(overview.xianyuOrders.amount.range) }}</p>
                 </div>
               </div>
             </div>

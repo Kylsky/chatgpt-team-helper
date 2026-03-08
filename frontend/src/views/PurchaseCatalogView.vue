@@ -47,7 +47,7 @@
                   </div>
                   <span
                     class="inline-flex items-center rounded-full px-3 py-1 text-[12px] font-semibold border"
-                    :class="plan.key === 'no_warranty'
+                    :class="plan.orderType === 'no_warranty'
                       ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20'
                       : 'bg-blue-500/10 text-[#007AFF] border-blue-500/20'"
                   >
@@ -103,20 +103,7 @@ const meta = ref<PurchaseMeta | null>(null)
 const errorMessage = ref('')
 const loading = ref(false)
 
-const plans = computed<PurchasePlan[]>(() => {
-  const allPlans = meta.value?.plans || []
-  // 自定义排序：防封禁商品放在第二位
-  const sortOrder: Record<string, number> = {
-    'warranty': 1,      // 质保商品第一位
-    'anti_ban': 2,      // 防封禁商品第二位
-    'no_warranty': 3    // 无质保商品第三位
-  }
-  return [...allPlans].sort((a, b) => {
-    const orderA = sortOrder[a.key] ?? 999
-    const orderB = sortOrder[b.key] ?? 999
-    return orderA - orderB
-  })
-})
+const plans = computed<PurchasePlan[]>(() => meta.value?.plans || [])
 
 
 const resolveCardNotes = (plan: PurchasePlan): string[] => {

@@ -129,15 +129,12 @@ const ensureCreditOrderEmail = (db, orderNo, email) => {
 
 const ORDER_TYPE_WARRANTY = 'warranty'
 const ORDER_TYPE_NO_WARRANTY = 'no_warranty'
-const ORDER_TYPE_ANTI_BAN = 'anti_ban'
-const ORDER_TYPE_SET = new Set([ORDER_TYPE_WARRANTY, ORDER_TYPE_NO_WARRANTY, ORDER_TYPE_ANTI_BAN])
+const ORDER_TYPE_SET = new Set([ORDER_TYPE_WARRANTY, ORDER_TYPE_NO_WARRANTY])
 
 const normalizeOrderType = (value) => {
   const normalized = String(value || '').trim().toLowerCase()
   return ORDER_TYPE_SET.has(normalized) ? normalized : ORDER_TYPE_WARRANTY
 }
-
-const isAntiBanOrderType = (value) => normalizeOrderType(value) === ORDER_TYPE_ANTI_BAN
 
 const loadLinuxDoUserEmail = (db, uid) => {
   if (!db || !uid) return ''
@@ -314,11 +311,10 @@ const fulfillOpenAccountsBoardOrder = async (db, row) => {
   }
 
   const accountEmailRow = db.exec(
-    `SELECT email, COALESCE(is_demoted, 0) AS is_demoted FROM gpt_accounts WHERE id = ? LIMIT 1`,
+    `SELECT email FROM gpt_accounts WHERE id = ? LIMIT 1`,
     [targetAccountId]
   )[0]?.values?.[0]
   const accountEmail = accountEmailRow?.[0] ? String(accountEmailRow[0]) : ''
-  const accountDemoted = Number(accountEmailRow?.[1] || 0) === 1
   if (!accountEmail) {
     const message = '开放账号缺少邮箱配置，无法执行邀请'
     const payload = { ...existingPayload, attempts, stopRetry: true, lastAttemptAt: nowIso(), lastError: message }
@@ -340,12 +336,7 @@ const fulfillOpenAccountsBoardOrder = async (db, row) => {
     return { ok: false, error: message, retryable: false }
   }
 
-  const effectiveOrderType = (() => {
-    if (existingPayload.orderType || existingPayload.order_type) {
-      return orderType
-    }
-    return accountDemoted ? ORDER_TYPE_ANTI_BAN : ORDER_TYPE_WARRANTY
-  })()
+  const effectiveOrderType = (existingPayload.orderType || existingPayload.order_type) ? orderType : ORDER_TYPE_WARRANTY
 
   const nextAttempt = attempts + 1
   const startedAt = Date.now()
@@ -380,8 +371,8 @@ const fulfillOpenAccountsBoardOrder = async (db, row) => {
     const invites = await fetchAccountInvites(targetAccountId, { inviteListParams: { offset: 0, limit: 25, query: email } })
     const isInvited = (invites.items || []).some(item => normalizeEmail(item.email_address) === email)
 
-    const baseCapacity = isAntiBanOrderType(effectiveOrderType) ? 6 : 5
-    const redeemCapacity = isMember || isInvited ? Math.max(baseCapacity, 6) : baseCapacity
+    const baseCapacity = 5
+    const redeemCapacity = isMember || isInvited ? 6 : baseCapacity
     const redeemOutcome = await redeemOpenAccountsOrderCode(db, {
       orderNo,
       uid,

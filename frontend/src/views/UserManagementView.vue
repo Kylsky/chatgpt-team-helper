@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminService, authService, userService, type PointsLedgerRecord, type PurchaseOrder, type RbacRole, type RbacUser } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,7 @@ const isSuperAdmin = computed(() => {
   return Array.isArray(user?.roles) && user.roles.includes('super_admin')
 })
 
+const teleportReady = ref(false)
 const currentUserId = computed(() => Number(authService.getCurrentUser()?.id) || 0)
 const isCurrentUser = (userId: number) => currentUserId.value !== 0 && currentUserId.value === userId
 
@@ -628,7 +629,13 @@ watch(detailTab, async (tab) => {
 })
 
 onMounted(async () => {
+  await nextTick()
+  teleportReady.value = !!document.getElementById('header-actions')
   await loadData()
+})
+
+onUnmounted(() => {
+  teleportReady.value = false
 })
 </script>
 
@@ -639,7 +646,22 @@ onMounted(async () => {
     </div>
 
     <template v-else>
-      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <Teleport v-if="teleportReady" to="#header-actions">
+        <div class="flex items-center gap-3 flex-wrap justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            class="bg-white border-gray-200 text-gray-700 hover:bg-gray-50 h-10 rounded-xl px-4"
+            :disabled="listLoading"
+            @click="loadData"
+          >
+            <RefreshCw class="h-4 w-4 mr-2" :class="{ 'animate-spin': listLoading }" />
+            刷新列表
+          </Button>
+        </div>
+      </Teleport>
+
+      <div class="flex flex-col lg:flex-row lg:items-center gap-4">
         <div class="flex gap-3 items-center">
           <Input
             v-model="search"
@@ -648,18 +670,6 @@ onMounted(async () => {
             @keyup.enter="handleSearch"
           />
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          class="h-11 w-11 rounded-xl"
-          :disabled="listLoading"
-          :title="listLoading ? '刷新中...' : '刷新'"
-          aria-label="刷新"
-          @click="loadData"
-        >
-          <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': listLoading }" />
-        </Button>
       </div>
 
       <div v-if="error" class="rounded-2xl border border-red-100 bg-red-50/50 p-4 text-red-600">

@@ -48,6 +48,7 @@ router.get('/runtime', async (req, res) => {
       turnstileEnabled: Boolean(turnstileSettings.enabled),
       turnstileSiteKey: turnstileSiteKey || null,
       features,
+      channels,
       openAccountsEnabled,
       openAccountsMaintenanceMessage: openAccountsEnabled ? null : getOpenAccountsMaintenanceMessage(),
       siteNotice

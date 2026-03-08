@@ -190,52 +190,39 @@ const formatCashAmount = (cashCents) => {
 
 const SEAT_TYPE_UNDEMOTED = 'undemoted'
 const SEAT_TYPE_DEMOTED = 'demoted'
-const SEAT_TYPE_SET = new Set([SEAT_TYPE_UNDEMOTED, SEAT_TYPE_DEMOTED])
-const normalizeSeatType = (value) => {
-  const normalized = String(value || '').trim().toLowerCase()
-  return SEAT_TYPE_SET.has(normalized) ? normalized : SEAT_TYPE_UNDEMOTED
-}
 
-const getTodayCommonCodeCount = (db, seatType) => {
-  const resolvedSeatType = normalizeSeatType(seatType)
-  const expectedDemoted = resolvedSeatType === SEAT_TYPE_DEMOTED ? 1 : 0
+const getTodayCommonCodeCount = (db) => {
   const result = db.exec(
     `
-      SELECT COUNT(*)
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND rc.channel = 'common'
-        AND DATE(rc.created_at) = DATE('now', 'localtime')
+	      SELECT COUNT(*)
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND rc.channel = 'common'
+	        AND DATE(rc.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-        AND COALESCE(ga.is_demoted, 0) = ?
     `
-    , [expectedDemoted]
   )
   return Number(result[0]?.values?.[0]?.[0] || 0)
 }
 
-const pickTodayCommonCode = (db, seatType) => {
-  const resolvedSeatType = normalizeSeatType(seatType)
-  const expectedDemoted = resolvedSeatType === SEAT_TYPE_DEMOTED ? 1 : 0
+const pickTodayCommonCode = (db) => {
   const row = db.exec(
     `
-      SELECT rc.code
-      FROM redemption_codes rc
-      JOIN gpt_accounts ga ON lower(ga.email) = lower(rc.account_email)
-      WHERE rc.is_redeemed = 0
-        AND rc.channel = 'common'
-        AND DATE(rc.created_at) = DATE('now', 'localtime')
+	      SELECT rc.code
+	      FROM redemption_codes rc
+	      JOIN gpt_accounts ga ON lower(trim(ga.email)) = lower(trim(rc.account_email))
+	      WHERE rc.is_redeemed = 0
+	        AND rc.channel = 'common'
+	        AND DATE(rc.created_at) = DATE('now', 'localtime')
         AND (rc.reserved_for_uid IS NULL OR TRIM(rc.reserved_for_uid) = '')
         AND (rc.reserved_for_order_no IS NULL OR rc.reserved_for_order_no = '')
         AND (rc.reserved_for_entry_id IS NULL OR rc.reserved_for_entry_id = 0)
-        AND COALESCE(ga.is_demoted, 0) = ?
       ORDER BY rc.created_at ASC
       LIMIT 1
     `
-    , [expectedDemoted]
   )[0]?.values?.[0]
 
   if (!row?.[0]) return ''
@@ -256,9 +243,10 @@ router.get('/points/meta', authenticateToken, async (req, res) => {
     }
 
     const points = Number(userResult[0].values[0][0] || 0)
+    const remaining = getTodayCommonCodeCount(db)
     const remainingByType = {
-      [SEAT_TYPE_UNDEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_UNDEMOTED),
-      [SEAT_TYPE_DEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_DEMOTED),
+      [SEAT_TYPE_UNDEMOTED]: remaining,
+      [SEAT_TYPE_DEMOTED]: 0,
     }
     const withdrawSettings = await getPointsWithdrawSettings(db)
 
@@ -266,7 +254,7 @@ router.get('/points/meta', authenticateToken, async (req, res) => {
       points,
       seat: {
         costPoints: TEAM_SEAT_COST_POINTS,
-        remaining: remainingByType[SEAT_TYPE_UNDEMOTED] || 0,
+        remaining,
         remainingByType,
         defaultType: SEAT_TYPE_UNDEMOTED,
       },
@@ -368,7 +356,6 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
   }
 
   const requestedEmail = String(req.body?.email || '').trim()
-  const requestedSeatType = normalizeSeatType(req.body?.seatType)
 
   try {
     const result = await withLocks([`points:redeem-team`, `points:user:${userId}`], async () => {
@@ -394,7 +381,7 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
         return { ok: false, status: 409, error: `积分不足（需要 ${TEAM_SEAT_COST_POINTS} 积分）` }
       }
 
-      const code = pickTodayCommonCode(db, requestedSeatType)
+      const code = pickTodayCommonCode(db)
       if (!code) {
         return { ok: false, status: 409, error: '今日可兑换名额不足，请稍后再试' }
       }
@@ -422,9 +409,10 @@ router.post('/points/redeem/team', authenticateToken, async (req, res) => {
       const pointsAfterResult = db.exec('SELECT COALESCE(points, 0) FROM users WHERE id = ? LIMIT 1', [userId])
       const pointsAfter = Number(pointsAfterResult[0]?.values?.[0]?.[0] || 0)
 
+      const remaining = getTodayCommonCodeCount(db)
       const remainingByType = {
-        [SEAT_TYPE_UNDEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_UNDEMOTED),
-        [SEAT_TYPE_DEMOTED]: getTodayCommonCodeCount(db, SEAT_TYPE_DEMOTED),
+        [SEAT_TYPE_UNDEMOTED]: remaining,
+        [SEAT_TYPE_DEMOTED]: 0,
       }
       return { ok: true, redemption, points: pointsAfter, remainingByType }
     })

@@ -13,6 +13,48 @@ router.use(requireFeatureEnabled('openAccounts'))
 
 router.use('/admin', authenticateToken, requireMenu('credit_orders'))
 
+router.get('/admin/orders/summary', async (req, res) => {
+  try {
+    const db = await getDatabase()
+    const search = (req.query.search || '').trim().toLowerCase()
+
+    const conditions = []
+    const params = []
+
+    if (search) {
+      conditions.push(`(LOWER(order_no) LIKE ? OR LOWER(uid) LIKE ? OR LOWER(username) LIKE ? OR LOWER(title) LIKE ?)`)
+      const searchPattern = `%${search}%`
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern)
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const result = db.exec(
+      `
+        SELECT
+          COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END), 0) AS paid,
+          COALESCE(SUM(CASE WHEN status IN ('pending_payment', 'created') THEN 1 ELSE 0 END), 0) AS pending,
+          COALESCE(SUM(CASE WHEN status = 'refunded' THEN 1 ELSE 0 END), 0) AS refunded
+        FROM credit_orders
+        ${whereClause}
+      `,
+      params
+    )
+
+    const row = result[0]?.values?.[0] || [0, 0, 0, 0]
+    res.json({
+      total: Number(row[0] || 0),
+      paid: Number(row[1] || 0),
+      pending: Number(row[2] || 0),
+      refunded: Number(row[3] || 0)
+    })
+  } catch (error) {
+    console.error('[Credit] admin summary error:', error)
+    res.status(500).json({ error: '查询失败' })
+  }
+})
+
 const safeSnippet = (value, limit = 420) => {
   if (value == null) return ''
   const raw = typeof value === 'string' ? value : (() => {

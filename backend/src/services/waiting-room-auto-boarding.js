@@ -355,7 +355,7 @@ async function redeemReservedCode(db, entry, code) {
       token: account.token,
       chatgpt_account_id: account.chatgptAccountId,
       oai_device_id: account.oaiDeviceId
-    })
+    }, { proxyKey: account.id })
     if (!inviteResult.success) {
       console.error(`${LABEL} 邀请 ${entry.email} 时失败:`, inviteResult.error)
     } else {

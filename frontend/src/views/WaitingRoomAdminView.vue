@@ -314,7 +314,7 @@ onUnmounted(() => {
   <div class="space-y-8">
     <!-- Teleport Header Actions -->
     <Teleport v-if="teleportReady" to="#header-actions">
-       <div class="flex items-center gap-3">
+       <div class="flex items-center gap-3 flex-wrap justify-end">
           <Button
             variant="destructive"
             class="h-10 rounded-xl px-4 shadow-sm bg-red-50 text-red-600 hover:bg-red-100 border-none"
@@ -331,7 +331,7 @@ onUnmounted(() => {
             @click="refreshAll"
           >
             <RefreshCcw class="h-4 w-4 mr-2" :class="loading ? 'animate-spin' : ''" />
-            刷新
+            刷新列表
           </Button>
        </div>
     </Teleport>

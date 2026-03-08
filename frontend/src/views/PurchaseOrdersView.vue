@@ -26,7 +26,7 @@ const error = ref('')
 const teleportReady = ref(false)
 
 // 分页相关状态（真实后端分页）
-const paginationMeta = ref({ page: 1, pageSize: 15, total: 0 })
+const paginationMeta = ref({ page: 1, pageSize: 10, total: 0 })
 
 // 搜索和筛选状态
 const searchQuery = ref('')
@@ -136,7 +136,7 @@ const loadOrders = async () => {
     const params = buildSearchParams()
     const response = await purchaseService.adminListOrders(params)
     orders.value = response.orders || []
-    paginationMeta.value = response.pagination || { page: 1, pageSize: 15, total: 0 }
+    paginationMeta.value = response.pagination || { page: 1, pageSize: 10, total: 0 }
   } catch (err: any) {
     if (err?.response?.status === 401 || err?.response?.status === 403) {
       authService.logout()

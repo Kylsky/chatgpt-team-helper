@@ -207,17 +207,7 @@
                                   {{ getDiscountInfo(item.expireAt)!.label }}
                                 </div>
 
-	                                <!-- Demoted Badge (hover tooltip) -->
-	                                <div v-if="item.isDemoted" class="relative group/demoted shrink-0 overflow-visible">
-	                                  <div class="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider shadow-sm flex items-center justify-center bg-amber-500 text-white cursor-help">
-	                                    已降级
-	                                  </div>
-	                                  <div class="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-56 p-2 bg-gray-900/90 dark:bg-white/90 text-white dark:text-black text-xs rounded-lg shadow-xl opacity-0 invisible group-hover/demoted:opacity-100 group-hover/demoted:visible transition-all duration-200 z-50 pointer-events-none text-left">
-	                                    具有更强的抗封禁能力，但无法退出工作空间，介意勿拍。
-	                                    <div class="absolute top-[-4px] left-1/2 -translate-x-1/2 w-2 h-2 bg-gray-900/90 dark:bg-white/90 rotate-45"></div>
-	                                  </div>
-	                                </div>
-                              </div>
+	                              </div>
                               
                               <!-- Status Badge -->
                               <div
@@ -442,48 +432,9 @@
         </DialogContent>
       </Dialog>
 
-	      <Dialog v-model:open="showDemotedConfirmDialog">
-	        <DialogContent :showClose="false" class="sm:max-w-[360px] p-0 overflow-hidden rounded-[20px] border-0 shadow-2xl bg-transparent">
-	          <div class="absolute inset-0 bg-white/90 dark:bg-[#1c1c1e]/90 backdrop-blur-md z-0"></div>
-
-          <div class="relative z-10 flex flex-col items-center pt-6 pb-5 px-5 text-center">
-            <div class="h-12 w-12 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 shadow-sm">
-              <AlertCircle class="h-6 w-6 text-amber-600 dark:text-amber-400" />
-            </div>
-
-	            <DialogHeader class="mb-3 space-y-1.5 w-full">
-	              <DialogTitle class="w-full text-center text-[17px] font-semibold text-[#1d1d1f] dark:text-white">注意：已降级账号</DialogTitle>
-	            </DialogHeader>
-
-            <DialogDescription class="text-[13px] text-gray-600 dark:text-gray-300 leading-relaxed px-1">
-              具有更强的抗封禁能力，但无法退出工作空间，介意勿拍。
-              <template v-if="demotedConfirmCost">
-                <div class="mt-2 text-[13px] text-[#1d1d1f] dark:text-white">
-                  本次消耗：<span class="font-mono">{{ demotedConfirmCost }}</span> Credit
-                </div>
-              </template>
-            </DialogDescription>
-          </div>
-
-          <div class="relative z-10 flex border-t border-gray-300/30 dark:border-white/10 mt-auto divide-x divide-gray-300/30 dark:divide-white/10">
-            <button
-              @click="cancelDemotedConfirm"
-              class="flex-1 py-3 text-[15px] font-medium text-[#007AFF] hover:bg-gray-100/50 dark:hover:bg-white/5 transition-colors active:bg-gray-200/50"
-            >
-              取消
-            </button>
-            <button
-              @click="confirmDemotedBoard"
-              class="flex-1 py-3 text-[15px] font-semibold text-[#007AFF] hover:bg-blue-50/50 dark:hover:bg-blue-500/10 transition-colors active:bg-blue-100/50"
-            >
-              继续上车
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  </RedeemShell>
-</template>
+	    </div>
+	  </RedeemShell>
+	</template>
 
 	<script setup lang="ts">
 		import { AlertCircle, Mail, Users, Clock, Calendar, HelpCircle, ExternalLink } from 'lucide-vue-next'
@@ -496,7 +447,7 @@
 	import LinuxDoUserPopover from '@/components/LinuxDoUserPopover.vue'
 	import { useLinuxDoAuthSession } from '@/composables/useLinuxDoAuthSession'
 	import { creditService, openAccountsService, linuxDoUserService, type OpenAccountItem, type OpenAccountsResponse } from '@/services/api'
-	import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+		import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 	import { useToast } from '@/components/ui/toast'
   import { useAppConfigStore } from '@/stores/appConfig'
 
@@ -512,8 +463,6 @@
 const showEmailDialog = ref(false)
 const showEmailSaveConfirm = ref(false)
 const showNoWarrantySwitchDialog = ref(false)
-const showDemotedConfirmDialog = ref(false)
-const demotedConfirmAccountId = ref<number | null>(null)
 const emailDraft = ref('')
 const emailError = ref('')
 const savingEmail = ref(false)
@@ -564,13 +513,6 @@ const sortedAccounts = computed(() => {
   const current = list.find(item => item.id === currentId)
   if (!current) return list
   return [current, ...list.filter(item => item.id !== currentId)]
-})
-
-const demotedConfirmCost = computed(() => {
-  const id = demotedConfirmAccountId.value
-  if (!id) return ''
-  const item = (accounts.value || []).find(candidate => candidate.id === id)
-  return String(item?.creditCost || '').trim()
 })
 
 const {
@@ -688,11 +630,6 @@ const openEmailDialog = () => {
 const cancelEmailSaveConfirm = () => {
   showEmailSaveConfirm.value = false
   showEmailDialog.value = true
-}
-
-const cancelDemotedConfirm = () => {
-  showDemotedConfirmDialog.value = false
-  demotedConfirmAccountId.value = null
 }
 
 const openNoWarrantySwitchDialog = (message?: string) => {
@@ -926,25 +863,12 @@ const doBoard = async (accountId: number) => {
         return
       }
 	    loadError.value = message
-		  } finally {
-		    selectingAccountId.value = null
-		  }
-		}
-
-const confirmDemotedBoard = async () => {
-  const accountId = demotedConfirmAccountId.value
-  cancelDemotedConfirm()
-  if (!accountId) return
-  await doBoard(accountId)
-}
+			  } finally {
+			    selectingAccountId.value = null
+			  }
+			}
 
 const board = async (accountId: number) => {
-  const target = (accounts.value || []).find(candidate => candidate.id === accountId)
-  if (target?.isDemoted) {
-    demotedConfirmAccountId.value = accountId
-    showDemotedConfirmDialog.value = true
-    return
-  }
   await doBoard(accountId)
 }
 

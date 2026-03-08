@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import RedeemView from '../views/RedeemView.vue'
+import GenericRedeemView from '../views/GenericRedeemView.vue'
 import AccountRecoveryView from '../views/AccountRecoveryView.vue'
 import LinuxDoRedeemView from '../views/LinuxDoRedeemView.vue'
 import LinuxDoOpenAccountsView from '../views/LinuxDoOpenAccountsView.vue'
@@ -120,6 +121,11 @@ const router = createRouter({
       name: 'xianyu-redeem',
       component: XianyuRedeemView,
       meta: { featureKey: 'xianyu' },
+    },
+    {
+      path: '/redeem/:channelKey',
+      name: 'generic-redeem',
+      component: GenericRedeemView,
     },
     {
       path: '/waiting-room',

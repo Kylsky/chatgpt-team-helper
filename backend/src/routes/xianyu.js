@@ -1,11 +1,14 @@
 import express from 'express'
 import { authenticateToken } from '../middleware/auth.js'
 import { requireMenu } from '../middleware/rbac.js'
+import { getDatabase } from '../database/init.js'
 import {
   getXianyuConfig,
   updateXianyuConfig,
   getXianyuOrderStats,
   getXianyuOrders,
+  getXianyuOrderById,
+  markXianyuOrderRedeemed,
   recordXianyuSyncResult,
   clearXianyuOrders,
   deleteXianyuOrder,
@@ -13,7 +16,6 @@ import {
   transformXianyuApiOrder,
   transformApiOrderForImport,
   importXianyuOrders,
-  getXianyuOrderById,
   normalizeXianyuOrderId,
 } from '../services/xianyu-orders.js'
 import { getXianyuLoginRefreshState, runXianyuLoginRefreshNow } from '../services/xianyu-login-refresh.js'
@@ -24,6 +26,22 @@ import { requireFeatureEnabled } from '../middleware/feature-flags.js'
 const router = express.Router()
 let lastSyncResult = null
 let syncing = false
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const normalizeEmail = (value) => String(value ?? '').trim().toLowerCase()
+
+const extractEmailFromRedeemedBy = (redeemedBy) => {
+  const raw = String(redeemedBy ?? '').trim()
+  if (!raw) return ''
+
+  const match = raw.match(/email\s*:\s*([^|]+)(?:\||$)/i)
+  if (match?.[1]) {
+    const extracted = String(match[1]).trim()
+    return EMAIL_REGEX.test(extracted) ? extracted.toLowerCase() : ''
+  }
+
+  return EMAIL_REGEX.test(raw) ? raw.toLowerCase() : ''
+}
 
 const isSyncing = () => syncing
 const setSyncing = (value) => {
@@ -240,6 +258,111 @@ router.get('/orders', async (req, res) => {
   } catch (error) {
     console.error('[Xianyu Orders] 获取订单失败:', error)
     res.status(500).json({ error: '获取订单列表失败' })
+  }
+})
+
+router.post('/orders/:id/bind-code', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ error: '无效的订单ID' })
+    }
+
+    const sanitizedCode = String(req.body?.code ?? '').trim().toUpperCase()
+    if (!sanitizedCode) {
+      return res.status(400).json({ error: '请输入兑换码' })
+    }
+
+    const db = await getDatabase()
+    const orderRow = db.exec(
+      `
+        SELECT id, order_id, COALESCE(is_used, 0) AS is_used, user_email
+        FROM xianyu_orders
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [id]
+    )[0]?.values?.[0]
+
+    if (!orderRow) {
+      return res.status(404).json({ error: '订单不存在' })
+    }
+
+    const orderId = String(orderRow[1] || '')
+    const isUsed = Number(orderRow[2] || 0) === 1
+    const existingOrderEmail = normalizeEmail(orderRow[3])
+    if (isUsed) {
+      return res.status(409).json({ error: '该订单已核销' })
+    }
+
+    const codeRow = db.exec(
+      `
+        SELECT id, code, is_redeemed, redeemed_by
+        FROM redemption_codes
+        WHERE upper(code) = ?
+        LIMIT 1
+      `,
+      [sanitizedCode]
+    )[0]?.values?.[0]
+
+    if (!codeRow) {
+      return res.status(404).json({ error: '兑换码不存在' })
+    }
+
+    const codeId = Number(codeRow[0])
+    const isRedeemed = Number(codeRow[2] || 0) === 1
+    const redeemedBy = codeRow[3]
+    if (!isRedeemed) {
+      return res.status(409).json({ error: '该兑换码尚未使用，无法绑定' })
+    }
+
+    let resolvedEmail = normalizeEmail(req.body?.email)
+    if (!resolvedEmail) resolvedEmail = extractEmailFromRedeemedBy(redeemedBy)
+    if (!resolvedEmail) resolvedEmail = existingOrderEmail
+    if (!resolvedEmail || !EMAIL_REGEX.test(resolvedEmail)) {
+      return res.status(400).json({ error: '缺少有效邮箱，无法绑定' })
+    }
+
+    const boundXhs = db.exec(
+      `
+        SELECT id, order_number
+        FROM xhs_orders
+        WHERE assigned_code_id = ?
+        LIMIT 1
+      `,
+      [codeId]
+    )[0]?.values?.[0]
+    if (boundXhs) {
+      return res.status(409).json({
+        error: '该兑换码已绑定其他订单',
+        existing: { channel: 'xhs', id: Number(boundXhs[0]), orderNumber: String(boundXhs[1] || '') }
+      })
+    }
+
+    const boundXianyu = db.exec(
+      `
+        SELECT id, order_id
+        FROM xianyu_orders
+        WHERE assigned_code_id = ?
+          AND id != ?
+        LIMIT 1
+      `,
+      [codeId, id]
+    )[0]?.values?.[0]
+    if (boundXianyu) {
+      return res.status(409).json({
+        error: '该兑换码已绑定其他订单',
+        existing: { channel: 'xianyu', id: Number(boundXianyu[0]), orderId: String(boundXianyu[1] || '') }
+      })
+    }
+
+    await markXianyuOrderRedeemed(id, codeId, sanitizedCode, resolvedEmail)
+
+    const updatedOrder = await getXianyuOrderById(orderId)
+    return res.json({ message: '绑定成功', order: updatedOrder })
+  } catch (error) {
+    console.error('[Xianyu Orders] 绑定兑换码失败:', error)
+    res.status(500).json({ error: '绑定失败，请稍后再试' })
   }
 })
 

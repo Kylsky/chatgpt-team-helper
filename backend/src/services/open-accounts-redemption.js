@@ -34,12 +34,12 @@ export const reserveOpenAccountsCode = (db, { orderNo, accountEmail, email }) =>
   const result = db.exec(
     `
       SELECT id, code, account_email, channel, is_redeemed, redeemed_by
-      FROM redemption_codes
-      WHERE is_redeemed = 0
-        AND account_email IS NOT NULL
-        AND lower(account_email) = ?
-        AND channel IN (${placeholders})
-        AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
+	      FROM redemption_codes
+	      WHERE is_redeemed = 0
+	        AND account_email IS NOT NULL
+	        AND lower(trim(account_email)) = ?
+	        AND channel IN (${placeholders})
+	        AND (reserved_for_uid IS NULL OR reserved_for_uid = '')
         AND (reserved_for_order_no IS NULL OR reserved_for_order_no = '')
         AND (reserved_for_entry_id IS NULL OR reserved_for_entry_id = 0)
       ORDER BY created_at ASC

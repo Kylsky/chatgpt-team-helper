@@ -56,12 +56,13 @@ API Key 的读取优先级：
 | `chatgptAccountId` | 否 | string | ChatGPT account id（用于优先匹配已有账号） |
 | `oaiDeviceId` | 否 | string | `oai-did` |
 | `expireAt` | 否 | string/number | 过期时间：支持 `YYYY/MM/DD HH:mm`、`YYYY-MM-DD HH:mm`、毫秒时间戳 |
-| `isDemoted`/`is_demoted` | 否 | boolean/number | 是否“降级/风控号”，支持 `true/false` 或 `1/0` |
+| `isDemoted`/`is_demoted` | 否 | boolean/number | **Deprecated**：已弃用（请求会被忽略；响应恒为 `false`，仅保留兼容） |
 
 **行为说明**
 
 - 更新逻辑：优先用 `chatgptAccountId` 查找，其次用 `email` 查找。
 - `expireAt`：如果未显式传入，后端会尝试从 `token` 的 JWT `exp` 字段推导并写入。
+- `isDemoted`/`is_demoted`：已弃用，后端会忽略该字段。
 - 新建账号时会自动生成若干兑换码（`generatedCodes` 字段返回）。
 - 会触发一次账号同步（`syncResult`/`removedUsers` 字段返回）。
 
@@ -69,7 +70,7 @@ API Key 的读取优先级：
 
 - 200：更新成功（`action=updated`）
 - 201：创建成功（`action=created`）
-- 400：参数错误（例如缺少 `email/token`、`expireAt` 格式不正确、`isDemoted` 不合法）
+- 400：参数错误（例如缺少 `email/token`、`expireAt` 格式不正确）
 - 401：API Key 不正确
 
 **请求示例**
@@ -78,15 +79,14 @@ API Key 的读取优先级：
 curl -X POST "https://<host>/api/auto-boarding" \
   -H "Content-Type: application/json" \
   -H "x-api-key: <your_api_key>" \
-  -d '{
-    "email": "user@example.com",
-    "token": "eyJhbGciOi...",
-    "refreshToken": "eyJhbGciOi...",
-    "chatgptAccountId": "acct_...",
-    "oaiDeviceId": "oai-did-...",
-    "expireAt": "2026/01/27 12:00",
-    "isDemoted": false
-  }'
+	  -d '{
+	    "email": "user@example.com",
+	    "token": "eyJhbGciOi...",
+	    "refreshToken": "eyJhbGciOi...",
+	    "chatgptAccountId": "acct_...",
+	    "oaiDeviceId": "oai-did-...",
+	    "expireAt": "2026/01/27 12:00"
+	  }'
 ```
 
 ### 4.2 GET `/api/auto-boarding/stats`

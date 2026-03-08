@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { authService, redemptionCodeService, gptAccountService, type RedemptionCode, type GptAccount, type RedemptionChannel, type PurchaseOrderType, type SyncUserCountResponse, type ChatgptAccountInviteItem } from '@/services/api'
+import { authService, configService, redemptionCodeService, gptAccountService, type RedemptionCode, type GptAccount, type PurchaseOrderType, type SyncUserCountResponse, type ChatgptAccountInviteItem } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { useAppConfigStore } from '@/stores/appConfig'
 import {
@@ -40,7 +40,7 @@ const teleportReady = ref(false)
 const showBatchDialog = ref(false)
 const batchCount = ref(10)
 const selectedAccountEmail = ref('')
-const selectedBatchChannel = ref<RedemptionChannel>('common')
+const selectedBatchChannel = ref('common')
 const creating = ref(false)
 const selectedCodes = ref<number[]>([])
 const showRedeemDialog = ref(false)
@@ -57,17 +57,18 @@ const dateFormatOptions = computed(() => ({
 const showTextPopover = ref(false)
 const popoverText = ref('')
 const popoverPosition = ref({ x: 0, y: 0 })
-const channelOptions: { value: RedemptionChannel; label: string }[] = [
+const channelOptions = ref<Array<{ value: string; label: string }>>([
   { value: 'common', label: '通用渠道' },
+  { value: 'paypal', label: 'PayPal' },
   { value: 'linux-do', label: 'Linux DO' },
   { value: 'xhs', label: '小红书' },
   { value: 'xianyu', label: '闲鱼' },
   { value: 'artisan-flow', label: 'ArtisanFlow' }
-]
+])
+const channelOptionsMap = computed(() => new Map(channelOptions.value.map(option => [option.value, option.label])))
 const orderTypeOptions: { value: PurchaseOrderType; label: string }[] = [
   { value: 'warranty', label: '质保订单' },
   { value: 'no_warranty', label: '无质保订单' },
-  { value: 'anti_ban', label: '防封禁订单' }
 ]
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const updatingChannelId = ref<number | null>(null)
@@ -84,16 +85,17 @@ const accountsByEmail = computed(() => {
   return map
 })
 
-const accountDemotionMeta = (accountEmail?: string | null) => {
+const isAccountBanned = (accountEmail?: string | null) => {
   const normalizedEmail = String(accountEmail || '').trim().toLowerCase()
-  if (!normalizedEmail) return null
+  if (!normalizedEmail) return false
   const account = accountsByEmail.value.get(normalizedEmail)
-  if (!account) {
-    return { label: '未知', className: 'bg-gray-50 text-gray-500 border-gray-200' }
-  }
-  return account.isDemoted
-    ? { label: '已降级', className: 'bg-orange-50 text-orange-700 border-orange-200' }
-    : { label: '未降级', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+  return Boolean(account?.isBanned)
+}
+
+const isCodeAccountBanned = (code?: RedemptionCode | null) => {
+  if (!code) return false
+  if (typeof code.accountIsBanned === 'boolean') return code.accountIsBanned
+  return isAccountBanned(code.accountEmail)
 }
 
 // 同步相关状态（参考账号管理的同步按钮交互）
@@ -143,18 +145,20 @@ const hideTextPopover = () => {
   }
 }
 
-const getChannelLabel = (value?: RedemptionChannel) => {
-  const fallback = channelOptions[0]?.label || '通用渠道'
+const getChannelLabel = (value?: string) => {
+  const fallback = channelOptions.value[0]?.label || '通用渠道'
   if (!value) return fallback
-  return channelOptions.find(option => option.value === value)?.label || fallback
+  return channelOptionsMap.value.get(value) || fallback
 }
 
 const handleChannelChange = async (target: RedemptionCode, nextChannel: string) => {
-  const validChannels: RedemptionChannel[] = ['common', 'linux-do', 'xhs', 'xianyu', 'artisan-flow']
-  const normalized: RedemptionChannel = validChannels.includes(nextChannel as RedemptionChannel)
-    ? (nextChannel as RedemptionChannel)
-    : 'common'
+  const normalized = String(nextChannel || '').trim().toLowerCase()
+  if (!normalized) return
   if (target.channel === normalized || updatingChannelId.value === target.id) {
+    return
+  }
+  if (!channelOptionsMap.value.has(normalized)) {
+    showErrorToast('未知渠道，请刷新页面后重试')
     return
   }
 
@@ -225,6 +229,17 @@ const clearFilters = () => {
   loadCodes()
 }
 
+const handleRefresh = async () => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  await Promise.all([
+    loadCodes(),
+    loadAccounts()
+  ])
+}
+
 const applySearchFromQuery = () => {
   const raw = route.query.q ?? route.query.search ?? route.query.code
   const value = Array.isArray(raw) ? raw[0] : raw
@@ -233,6 +248,25 @@ const applySearchFromQuery = () => {
   searchQuery.value = normalized
   currentPage.value = 1
   return true
+}
+
+const loadChannels = async () => {
+  try {
+    const runtime = await configService.getRuntimeConfig()
+    const channels = Array.isArray(runtime.channels) ? runtime.channels : []
+    if (!channels.length) return
+
+    channelOptions.value = channels.map(channel => ({
+      value: channel.key,
+      label: channel.isActive ? channel.name : `${channel.name}（停用）`
+    }))
+
+    if (!channelOptions.value.some(option => option.value === selectedBatchChannel.value)) {
+      selectedBatchChannel.value = channelOptions.value[0]?.value || 'common'
+    }
+  } catch (err) {
+    console.warn('[RedemptionCodes] load channels failed', err)
+  }
 }
 
 onMounted(async () => {
@@ -247,7 +281,8 @@ onMounted(async () => {
   applySearchFromQuery()
   await Promise.all([
     loadCodes(),
-    loadAccounts()
+    loadAccounts(),
+    loadChannels(),
   ])
 
   if (typeof window !== 'undefined') {
@@ -316,7 +351,9 @@ const loadCodes = async () => {
 
 const loadAccounts = async () => {
   try {
-    const pageSize = 200
+    // Backend caps pageSize at 100. If we request more, the API will still return 100
+    // but our pagination loop would stop early (batch.length < requested pageSize).
+    const pageSize = 100
     let page = 1
     const allAccounts: GptAccount[] = []
 
@@ -325,12 +362,15 @@ const loadAccounts = async () => {
       const batch = response.accounts || []
       allAccounts.push(...batch)
 
-      const total = response.pagination?.total ?? allAccounts.length
+      const total = Number(response.pagination?.total ?? allAccounts.length)
+      const effectivePageSize = Number(response.pagination?.pageSize ?? pageSize)
+
       if (allAccounts.length >= total) break
-      if (batch.length < pageSize) break
+      if (batch.length < effectivePageSize) break
 
       page += 1
-      if (page > 50) break
+      // Safety valve to avoid an infinite loop if the backend pagination breaks.
+      if (page > 200) break
     }
 
     accounts.value = allAccounts
@@ -468,7 +508,6 @@ const copyToClipboard = async (text: string, options: { silent?: boolean } = {})
       showSuccessToast('已复制到剪贴板')
     }
   } catch (err) {
-    // 降级方案
     const textarea = document.createElement('textarea')
     textarea.value = text
     document.body.appendChild(textarea)
@@ -579,9 +618,7 @@ const openRedeemDialog = (code: RedemptionCode) => {
 
   redeemTargetCode.value = code
   redeemEmail.value = code.redeemedBy || ''
-  redeemOrderType.value = code.orderType === 'no_warranty' || code.orderType === 'anti_ban'
-    ? code.orderType
-    : 'warranty'
+  redeemOrderType.value = code.orderType === 'no_warranty' ? 'no_warranty' : 'warranty'
   showRedeemDialog.value = true
 }
 
@@ -837,7 +874,16 @@ const handleInviteSubmit = async () => {
   <div class="space-y-8">
     <!-- Header Actions -->
     <Teleport v-if="teleportReady" to="#header-actions">
-       <div class="flex items-center gap-3">
+       <div class="flex items-center gap-3 flex-wrap justify-end">
+          <Button
+            variant="outline"
+            class="h-10 border-gray-200 bg-white"
+            :disabled="loading"
+            @click="handleRefresh"
+          >
+            <RefreshCw class="w-4 h-4 mr-2" :class="{ 'animate-spin': loading }" />
+            刷新列表
+          </Button>
           <Button @click="exportCodes" variant="outline" class="h-10 bg-white border-gray-200">
             <Download class="mr-2 h-4 w-4" />
             导出
@@ -1018,20 +1064,13 @@ const handleInviteSubmit = async () => {
                         :disabled="syncingAccountEmail === code.accountEmail"
                         @click="handleSyncAccountByEmail(code.accountEmail)"
                       >
-                        <span class="truncate">{{ code.accountEmail }}</span>
+                        <span class="truncate" :class="isCodeAccountBanned(code) ? 'text-red-600' : ''">{{ code.accountEmail }}</span>
                         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': syncingAccountEmail === code.accountEmail }" />
-                      </button>
-                      <span
-                        v-if="accountDemotionMeta(code.accountEmail)"
-                        class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium"
-                        :class="accountDemotionMeta(code.accountEmail)?.className"
-                      >
-                        {{ accountDemotionMeta(code.accountEmail)?.label }}
-                      </span>
-                    </template>
-                    <span v-else class="text-sm text-gray-400">-</span>
-                  </div>
-                </td>
+	                      </button>
+	                    </template>
+	                    <span v-else class="text-sm text-gray-400">-</span>
+	                  </div>
+	                </td>
                 <td class="px-6 py-5">
                    <div class="flex flex-col items-start gap-1">
                       <span
@@ -1155,19 +1194,12 @@ const handleInviteSubmit = async () => {
 	                        :disabled="syncingAccountEmail === code.accountEmail"
 	                        @click="handleSyncAccountByEmail(code.accountEmail)"
 	                      >
-	                        <div class="w-4 h-4 flex-shrink-0 rounded-full bg-white flex items-center justify-center text-[10px] text-gray-500 font-bold shadow-sm">
-	                          {{ code.accountEmail.charAt(0).toUpperCase() }}
-	                        </div>
-	                        <span class="text-xs text-gray-700 truncate">{{ code.accountEmail }}</span>
-	                        <span
-	                          v-if="accountDemotionMeta(code.accountEmail)"
-	                          class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium flex-shrink-0"
-	                          :class="accountDemotionMeta(code.accountEmail)?.className"
-	                        >
-	                          {{ accountDemotionMeta(code.accountEmail)?.label }}
-	                        </span>
-	                        <RefreshCw class="w-3.5 h-3.5 text-gray-400 ml-auto" :class="{ 'animate-spin': syncingAccountEmail === code.accountEmail }" />
-	                      </button>
+		                        <div class="w-4 h-4 flex-shrink-0 rounded-full bg-white flex items-center justify-center text-[10px] text-gray-500 font-bold shadow-sm">
+		                          {{ code.accountEmail.charAt(0).toUpperCase() }}
+		                        </div>
+		                        <span class="text-xs truncate" :class="isCodeAccountBanned(code) ? 'text-red-600' : 'text-gray-700'">{{ code.accountEmail }}</span>
+		                        <RefreshCw class="w-3.5 h-3.5 text-gray-400 ml-auto" :class="{ 'animate-spin': syncingAccountEmail === code.accountEmail }" />
+		                      </button>
                       <div v-else class="w-full h-8 flex items-center px-3 gap-2 bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
                         <div class="w-4 h-4 flex-shrink-0 rounded-full bg-white flex items-center justify-center text-[10px] text-gray-500 font-bold shadow-sm">
                           ?
@@ -1528,7 +1560,12 @@ const handleInviteSubmit = async () => {
               </div>
               <div class="flex justify-between items-center">
                  <span class="text-xs text-blue-600 font-semibold uppercase">Account</span>
-                 <span class="font-medium text-blue-900">{{ redeemTargetCode.accountEmail || '未指定' }}</span>
+                 <span
+                   class="font-medium"
+                   :class="isCodeAccountBanned(redeemTargetCode) ? 'text-red-600' : 'text-blue-900'"
+                 >
+                   {{ redeemTargetCode.accountEmail || '未指定' }}
+                 </span>
               </div>
            </div>
 
