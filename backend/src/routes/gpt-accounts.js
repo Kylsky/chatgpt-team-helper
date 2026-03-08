@@ -1320,6 +1320,69 @@ router.post('/:id/sync-user-count', async (req, res) => {
   }
 })
 
+// 读取成员缓存（不触发远程同步）
+router.get('/:id/members', async (req, res) => {
+  try {
+    const accountId = Number(req.params.id)
+    if (!Number.isFinite(accountId) || accountId <= 0) {
+      return res.status(400).json({ error: '账号ID无效' })
+    }
+
+    const offset = Math.max(0, Number(req.query.offset) || 0)
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100))
+    const query = String(req.query.query || '').trim().toLowerCase()
+
+    const db = await getDatabase()
+    const accountResult = db.exec('SELECT id FROM gpt_accounts WHERE id = ? LIMIT 1', [accountId])
+    if (!accountResult[0]?.values?.length) {
+      return res.status(404).json({ error: '账号不存在' })
+    }
+
+    const conditions = ['account_id = ?']
+    const params = [accountId]
+    if (query) {
+      const likeValue = `%${query}%`
+      conditions.push('(LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(member_id) LIKE ?)')
+      params.push(likeValue, likeValue, likeValue)
+    }
+    const whereClause = `WHERE ${conditions.join(' AND ')}`
+
+    const totalResult = db.exec(
+      `SELECT COUNT(*) FROM gpt_account_members ${whereClause}`,
+      params
+    )
+    const total = Number(totalResult[0]?.values?.[0]?.[0] || 0)
+
+    const rowsResult = db.exec(
+      `
+        SELECT member_id, email, role, name, created_time, is_scim_managed
+        FROM gpt_account_members
+        ${whereClause}
+        ORDER BY created_time DESC, member_id ASC
+        LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset]
+    )
+
+    const items = (rowsResult[0]?.values || []).map(row => ({
+      id: String(row[0] || ''),
+      account_user_id: String(row[0] || ''),
+      email: row[1] ? String(row[1]) : '',
+      role: row[2] ? String(row[2]) : '',
+      name: row[3] ? String(row[3]) : '',
+      created_time: row[4] ? String(row[4]) : '',
+      is_scim_managed: Number(row[5] || 0) > 0,
+    }))
+
+    const protectedEmailSet = await getProtectedSeatEmailSet(db)
+    const usersWithProtectionTag = appendProtectedMemberSuffix({ items, total, limit, offset }, protectedEmailSet)
+    return res.json(usersWithProtectionTag)
+  } catch (error) {
+    console.error('读取成员缓存失败:', error)
+    return res.status(500).json({ error: '内部服务器错误' })
+  }
+})
+
 router.delete('/:id/users/:userId', async (req, res) => {
   try {
     const { account, syncedUserCount, users } = await deleteAccountUser(Number(req.params.id), req.params.userId)

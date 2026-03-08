@@ -160,6 +160,10 @@ onUnmounted(() => {
   }
   clearSyncAllPanelAutoHideTimer()
   cancelResyncAfterAction()
+  if (memberSearchDebounceTimer) {
+    clearTimeout(memberSearchDebounceTimer)
+    memberSearchDebounceTimer = null
+  }
 })
 
 // 计算总页数
@@ -183,6 +187,10 @@ const banningAccountId = ref<number | null>(null)
 
 // Tab 和 邀请列表状态
 const activeTab = ref<'members' | 'invites'>('members')
+const membersList = ref<SyncUserCountResponse['users']['items']>([])
+const memberSearchQuery = ref('')
+const loadingMembers = ref(false)
+let memberSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 const invitesList = ref<ChatgptAccountInviteItem[]>([])
 const loadingInvites = ref(false)
 const resyncingAfterAction = ref(false)
@@ -771,6 +779,19 @@ watch(searchQuery, () => {
   }, 300)
 })
 
+watch(memberSearchQuery, () => {
+  if (!showSyncResultDialog.value || activeTab.value !== 'members') return
+  const accountId = syncResult.value?.account?.id
+  if (!accountId) return
+  if (memberSearchDebounceTimer) {
+    clearTimeout(memberSearchDebounceTimer)
+  }
+  memberSearchDebounceTimer = setTimeout(() => {
+    loadMembers(accountId)
+    memberSearchDebounceTimer = null
+  }, 300)
+})
+
 watch(
   () => route.query.spaceStatus,
   (value) => {
@@ -940,6 +961,7 @@ const handleBanAccount = async (account: GptAccount) => {
 // 同步用户数量
 const applySyncResultToState = (result: SyncUserCountResponse) => {
   syncResult.value = result
+  membersList.value = Array.isArray(result.users?.items) ? [...result.users.items] : []
 
   const index = accounts.value.findIndex(a => a.id === result.account.id)
   if (index !== -1) {
@@ -994,6 +1016,7 @@ const scheduleResyncAfterAction = (accountId: number) => {
       const latestResult = await gptAccountService.syncUserCount(accountId)
       if (version !== resyncAfterActionVersion) return
       applySyncResultToState(latestResult)
+      await loadMembers(accountId)
 
       await loadInvites(accountId)
     } catch (err: any) {
@@ -1007,6 +1030,25 @@ const scheduleResyncAfterAction = (accountId: number) => {
       }
     }
   }, RESYNC_AFTER_ACTION_DELAY_MS)
+}
+
+const loadMembers = async (accountId: number) => {
+  if (!accountId) return
+  loadingMembers.value = true
+  try {
+    const response = await gptAccountService.getMembers(accountId, {
+      offset: 0,
+      limit: 200,
+      query: memberSearchQuery.value.trim(),
+    })
+    membersList.value = Array.isArray(response.items) ? response.items : []
+  } catch (err: any) {
+    const message = resolveRequestError(err, '获取成员缓存失败')
+    showErrorToast(message)
+    membersList.value = []
+  } finally {
+    loadingMembers.value = false
+  }
 }
 
 
@@ -1116,32 +1158,27 @@ const handleSyncAllSpaces = async () => {
 const handleShowMembers = async (account: GptAccount) => {
   cancelResyncAfterAction()
   syncingAccountId.value = account.id
+  memberSearchQuery.value = ''
+  membersList.value = []
   syncError.value = ''
-  syncResult.value = null
+  syncResult.value = {
+    message: '已加载本地缓存成员信息',
+    account,
+    syncedUserCount: Number(account.userCount || 0),
+    inviteCount: typeof account.inviteCount === 'number' ? account.inviteCount : 0,
+    users: { items: [], total: 0, limit: 0, offset: 0 },
+  }
   invitesList.value = []
   activeTab.value = 'members'
   previousUserCount.value = account.userCount
   previousInviteCount.value = typeof account.inviteCount === 'number' ? account.inviteCount : null
+  showSyncResultDialog.value = true
 
   try {
-    const result = await gptAccountService.syncUserCount(account.id)
-    applySyncResultToState(result)
-    showSyncResultDialog.value = true
-    loadInvites(account.id)
+    await loadMembers(account.id)
   } catch (err: any) {
     syncError.value = err.response?.data?.error || '获取成员信息失败'
-    if (isWorkspaceExpiredSyncError(err)) {
-      await markAccountStatusAbnormal(account.id, '到期')
-      syncError.value = '空间已到期'
-      showErrorToast('空间已到期')
-    } else if (isTokenInvalidError(err)) {
-      await markAccountStatusAbnormal(account.id, 'Token 已过期或无效，请更新账号 token')
-      if (!hasShownTokenExpiredHint.value) {
-        showWarningToast('该空间 token 已失效，请更新 token 后重试同步')
-        hasShownTokenExpiredHint.value = true
-      }
-    }
-    showSyncResultDialog.value = true
+    showErrorToast(syncError.value)
   } finally {
     syncingAccountId.value = null
   }
@@ -1205,11 +1242,29 @@ const closeSyncResultDialog = () => {
   showSyncResultDialog.value = false
   syncResult.value = null
   syncError.value = ''
+  memberSearchQuery.value = ''
+  membersList.value = []
   previousUserCount.value = null
   previousInviteCount.value = null
   invitesList.value = []
   activeTab.value = 'members'
   resetInviteForm()
+}
+
+const handleMembersTabClick = async () => {
+  activeTab.value = 'members'
+  const accountId = syncResult.value?.account?.id
+  if (accountId) {
+    await loadMembers(accountId)
+  }
+}
+
+const handleInvitesTabClick = async () => {
+  activeTab.value = 'invites'
+  const accountId = syncResult.value?.account?.id
+  if (accountId) {
+    await loadInvites(accountId)
+  }
 }
 
 const handleDeleteSyncedUser = async (userId?: string) => {
@@ -2095,14 +2150,14 @@ const handleInviteSubmit = async () => {
                     <!-- Tabs -->
                     <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl w-fit">
                        <button
-                          @click="activeTab = 'members'"
+                          @click="handleMembersTabClick"
                           class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all"
                           :class="activeTab === 'members' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
                  >
                           成员列表
                        </button>
                        <button
-                          @click="activeTab = 'invites'"
+                          @click="handleInvitesTabClick"
                           class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all"
                           :class="activeTab === 'invites' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
                        >
@@ -2126,7 +2181,17 @@ const handleInviteSubmit = async () => {
                  </div>
 
                  <!-- Members Table -->
+                 <div v-show="activeTab === 'members'">
+                    <Input
+                      v-model.trim="memberSearchQuery"
+                      placeholder="搜索成员邮箱 / 昵称 / ID"
+                      class="bg-white"
+                    />
+                 </div>
                  <div v-show="activeTab === 'members'" class="border border-gray-100 rounded-xl overflow-hidden">
+                    <div v-if="loadingMembers" class="p-8 flex justify-center">
+                      <div class="w-6 h-6 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+                    </div>
                     <table class="w-full text-sm">
                        <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
                           <tr>
@@ -2135,8 +2200,8 @@ const handleInviteSubmit = async () => {
                              <th class="px-4 py-3 text-right font-medium">操作</th>
                           </tr>
                        </thead>
-                       <tbody class="divide-y divide-gray-50">
-                          <tr v-for="user in syncResult.users?.items" :key="user.id" class="group hover:bg-gray-50/50">
+                       <tbody v-if="!loadingMembers" class="divide-y divide-gray-50">
+                          <tr v-for="user in membersList" :key="user.id" class="group hover:bg-gray-50/50">
                              <td class="px-4 py-3">
                           <div class="font-medium text-gray-900">{{ user.name }}</div>
                                 <div class="text-xs text-gray-400 flex items-center gap-2 flex-wrap">
@@ -2160,8 +2225,8 @@ const handleInviteSubmit = async () => {
               </button>
                              </td>
                           </tr>
-                          <tr v-if="!syncResult.users?.items?.length">
-                             <td colspan="3" class="px-4 py-8 text-center text-gray-400">暂无成员数据</td>
+                          <tr v-if="!membersList.length">
+                             <td colspan="3" class="px-4 py-8 text-center text-gray-400">暂无成员缓存数据</td>
                           </tr>
                        </tbody>
                     </table>
