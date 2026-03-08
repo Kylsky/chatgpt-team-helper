@@ -710,6 +710,13 @@ router.post('/', async (req, res) => {
     const body = req.body || {}
     const { email, token, refreshToken, userCount, chatgptAccountId, oaiDeviceId, expireAt } = body
 
+    const hasIsOpen = Object.prototype.hasOwnProperty.call(body, 'isOpen') || Object.prototype.hasOwnProperty.call(body, 'is_open')
+    const isOpenInput = Object.prototype.hasOwnProperty.call(body, 'isOpen') ? body.isOpen : body.is_open
+    const normalizedIsOpen = hasIsOpen ? normalizeBoolean(isOpenInput) : true
+    if (hasIsOpen && normalizedIsOpen === null) {
+      return res.status(400).json({ error: 'Invalid isOpen format' })
+    }
+
     // isDemoted/is_demoted: deprecated (ignored).
 
     const hasIsBanned = Object.prototype.hasOwnProperty.call(body, 'isBanned') || Object.prototype.hasOwnProperty.call(body, 'is_banned')
@@ -719,6 +726,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid isBanned format' })
     }
     const isBannedValue = normalizedIsBanned ? 1 : 0
+    const isOpenValue = normalizedIsOpen && !isBannedValue ? 1 : 0
 
     const normalizedChatgptAccountId = String(chatgptAccountId ?? '').trim()
     const normalizedOaiDeviceId = String(oaiDeviceId ?? '').trim()
@@ -743,8 +751,8 @@ router.post('/', async (req, res) => {
     const finalUserCount = userCount !== undefined ? userCount : 1
 
     db.run(
-      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
-      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isBannedValue]
+      `INSERT INTO gpt_accounts (email, token, refresh_token, user_count, chatgpt_account_id, oai_device_id, expire_at, is_open, is_banned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+      [normalizedEmail, token, refreshToken || null, finalUserCount, normalizedChatgptAccountId, normalizedOaiDeviceId || null, normalizedExpireAt, isOpenValue, isBannedValue]
     )
 
 		    // 获取新创建账号的ID

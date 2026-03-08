@@ -62,9 +62,9 @@
                     </p>
                   </div>
                   <div class="text-right">
-                    <p class="text-[13px] text-[#86868b]">服务期</p>
-                    <p class="text-[15px] font-semibold text-[#1d1d1f] dark:text-white">
-                      {{ plan.serviceDays }} 天
+                    <p class="text-[13px] text-[#86868b]">今日库存</p>
+                    <p class="text-[15px] font-semibold tabular-nums" :class="Number(plan.availableCount || 0) > 0 ? 'text-[#1d1d1f] dark:text-white' : 'text-[#FF3B30]'">
+                      {{ plan.availableCount }} 个
                     </p>
                   </div>
                 </div>

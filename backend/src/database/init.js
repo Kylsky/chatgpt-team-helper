@@ -1200,9 +1200,10 @@ const ensureLinuxDoUsersTable = (database) => {
 const ensureChannelsTable = (database) => {
   if (!database) return false
   let changed = false
+  const channelsTableExists = tableExists(database, 'channels')
 
   try {
-    if (!tableExists(database, 'channels')) {
+    if (!channelsTableExists) {
       database.run(`
         CREATE TABLE IF NOT EXISTS channels (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1252,6 +1253,7 @@ const ensureChannelsTable = (database) => {
     )
 
     for (const channel of BUILTIN_CHANNELS) {
+      if (channelsTableExists && NON_BUILTIN_KEYS.includes(channel.key)) continue
       const existing = database.exec('SELECT id FROM channels WHERE key = ? LIMIT 1', [channel.key])
       if (existing[0]?.values?.length) continue
       database.run(

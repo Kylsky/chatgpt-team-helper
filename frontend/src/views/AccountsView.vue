@@ -124,6 +124,7 @@ const formData = ref<CreateGptAccountDto>({
   refreshToken: '',
   userCount: 0,
   isBanned: false,
+  isOpen: true,
   chatgptAccountId: '',
   oaiDeviceId: '',
   expireAt: ''
@@ -948,6 +949,7 @@ const openEditDialog = (account: GptAccount) => {
 	    refreshToken: account.refreshToken || '',
 	    userCount: account.userCount,
 	    isBanned: Boolean(account.isBanned),
+	    isOpen: Boolean(account.isOpen),
 	    chatgptAccountId: account.chatgptAccountId || '',
 	    oaiDeviceId: account.oaiDeviceId || '',
 	    expireAt: toDatetimeLocal(account.expireAt || '')
@@ -958,7 +960,7 @@ const openEditDialog = (account: GptAccount) => {
 	const closeDialog = () => {
 	  showDialog.value = false
 	  editingAccount.value = null
-	  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isBanned: false, chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
+	  formData.value = { email: '', token: '', refreshToken: '', userCount: 0, isBanned: false, isOpen: true, chatgptAccountId: '', oaiDeviceId: '', expireAt: '' }
 	  checkedChatgptAccounts.value = []
 	  checkAccessTokenError.value = ''
 	  checkingAccessToken.value = false
@@ -969,6 +971,7 @@ const handleSubmit = async () => {
   try {
     const payload: CreateGptAccountDto = {
       ...formData.value,
+      isOpen: formData.value.isOpen !== false,
       email: formData.value.email.trim(),
       token: formData.value.token.trim(),
       refreshToken: formData.value.refreshToken?.trim() || '',
@@ -1859,6 +1862,28 @@ const handleInviteSubmit = async () => {
 		              </div>
 
 	                  <div class="grid grid-cols-1 gap-4">
+	                    <div v-if="!editingAccount" class="space-y-2">
+	                      <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">开放状态</Label>
+	                      <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+	                        <button
+	                          type="button"
+	                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+	                          :class="formData.isOpen !== false ? 'bg-blue-50 text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+	                          @click="formData.isOpen = true"
+	                        >
+	                          开放
+	                        </button>
+	                        <button
+	                          type="button"
+	                          class="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+	                          :class="formData.isOpen === false ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+	                          @click="formData.isOpen = false"
+	                        >
+	                          隐藏
+	                        </button>
+	                      </div>
+	                      <p class="text-[12px] text-gray-400">默认开放，可按需改为隐藏</p>
+	                    </div>
 	                    <div class="space-y-2">
 	                      <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">封禁状态</Label>
 	                      <div class="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">

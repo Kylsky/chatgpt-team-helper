@@ -8,7 +8,6 @@ import LinuxDoRedeemView from '../views/LinuxDoRedeemView.vue'
 import LinuxDoOpenAccountsView from '../views/LinuxDoOpenAccountsView.vue'
 import XhsRedeemView from '../views/XhsRedeemView.vue'
 import XianyuRedeemView from '../views/XianyuRedeemView.vue'
-import PurchaseView from '../views/PurchaseView.vue'
 import PurchaseCatalogView from '../views/PurchaseCatalogView.vue'
 import PurchaseProductView from '../views/PurchaseProductView.vue'
 import OrderView from '../views/OrderView.vue'
@@ -51,7 +50,7 @@ const router = createRouter({
     {
       path: '/buy',
       name: 'purchase',
-      component: PurchaseView,
+      redirect: { name: 'purchase-catalog' },
       meta: { featureKey: 'payment' }
     },
     {
