@@ -171,63 +171,6 @@ router.put('/history-exceptions/:accountId/status', authenticateToken, requireMe
   }
 })
 
-router.put('/history-exceptions/status/batch', authenticateToken, requireMenu('history_exception:update'), async (req, res) => {
-  try {
-    const rawIds = Array.isArray(req.body?.accountIds) ? req.body.accountIds : []
-    const accountIds = [...new Set(rawIds
-      .map(value => Number.parseInt(String(value ?? '').trim(), 10))
-      .filter(id => Number.isFinite(id) && id > 0))]
-
-    if (!accountIds.length) {
-      return res.status(400).json({ error: '请提供有效的 accountIds' })
-    }
-
-    const nextStatus = String(req.body?.status || '').trim().toLowerCase()
-    if (!HISTORY_EXCEPTION_STATUS_SET.has(nextStatus)) {
-      return res.status(400).json({
-        error: '无效的状态',
-        allowed: [HISTORY_EXCEPTION_STATUS.ACTIVE, HISTORY_EXCEPTION_STATUS.RESOLVED, HISTORY_EXCEPTION_STATUS.IGNORED],
-      })
-    }
-
-    const db = await getDatabase()
-    const placeholders = accountIds.map(() => '?').join(',')
-    const existsRows = db.exec(
-      `SELECT account_id FROM account_exception_history WHERE account_id IN (${placeholders})`,
-      accountIds
-    )[0]?.values || []
-    const existingIds = existsRows
-      .map(row => Number.parseInt(String(row?.[0] ?? ''), 10))
-      .filter(id => Number.isFinite(id) && id > 0)
-
-    if (!existingIds.length) {
-      return res.status(404).json({ error: '记录不存在' })
-    }
-
-    const existingPlaceholders = existingIds.map(() => '?').join(',')
-    db.run(
-      `
-        UPDATE account_exception_history
-        SET status = ?,
-            updated_at = DATETIME('now', 'localtime')
-        WHERE account_id IN (${existingPlaceholders})
-      `,
-      [nextStatus, ...existingIds]
-    )
-
-    await saveDatabase()
-
-    res.json({
-      status: nextStatus,
-      updatedCount: existingIds.length,
-      accountIds: existingIds,
-    })
-  } catch (error) {
-    console.error('[HistoryException] batch update status error:', error)
-    res.status(500).json({ error: '批量更新状态失败' })
-  }
-})
-
 router.delete('/history-exceptions/:accountId', authenticateToken, requireMenu('history_exception:delete'), async (req, res) => {
   try {
     const accountId = Number.parseInt(String(req.params.accountId || '').trim(), 10)
@@ -248,42 +191,6 @@ router.delete('/history-exceptions/:accountId', authenticateToken, requireMenu('
   } catch (error) {
     console.error('[HistoryException] delete error:', error)
     res.status(500).json({ error: '删除历史异常失败' })
-  }
-})
-
-router.post('/history-exceptions/batch-delete', authenticateToken, requireMenu('history_exception:delete'), async (req, res) => {
-  try {
-    const rawIds = Array.isArray(req.body?.accountIds) ? req.body.accountIds : []
-    const accountIds = [...new Set(rawIds
-      .map(value => Number.parseInt(String(value ?? '').trim(), 10))
-      .filter(id => Number.isFinite(id) && id > 0))]
-
-    if (!accountIds.length) {
-      return res.status(400).json({ error: '请提供有效的 accountIds' })
-    }
-
-    const db = await getDatabase()
-    const placeholders = accountIds.map(() => '?').join(',')
-    const existsRows = db.exec(
-      `SELECT account_id FROM account_exception_history WHERE account_id IN (${placeholders})`,
-      accountIds
-    )[0]?.values || []
-    const existingIds = existsRows
-      .map(row => Number.parseInt(String(row?.[0] ?? ''), 10))
-      .filter(id => Number.isFinite(id) && id > 0)
-
-    if (!existingIds.length) {
-      return res.status(404).json({ error: '记录不存在' })
-    }
-
-    const existingPlaceholders = existingIds.map(() => '?').join(',')
-    db.run(`DELETE FROM account_exception_history WHERE account_id IN (${existingPlaceholders})`, existingIds)
-    await saveDatabase()
-
-    res.json({ deleted: true, deletedCount: existingIds.length, accountIds: existingIds })
-  } catch (error) {
-    console.error('[HistoryException] batch delete error:', error)
-    res.status(500).json({ error: '批量删除历史异常失败' })
   }
 })
 

@@ -516,9 +516,9 @@ router.get('/', async (req, res) => {
     const params = []
 
     if (search) {
-      conditions.push(`(LOWER(email) LIKE ? OR LOWER(space_name) LIKE ? OR LOWER(token) LIKE ? OR LOWER(refresh_token) LIKE ? OR LOWER(chatgpt_account_id) LIKE ?)`)
+      conditions.push(`(LOWER(email) LIKE ? OR LOWER(token) LIKE ? OR LOWER(refresh_token) LIKE ? OR LOWER(chatgpt_account_id) LIKE ?)`)
       const searchPattern = `%${search}%`
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern)
     }
 
     if (memberSearch) {

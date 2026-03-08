@@ -1447,7 +1447,7 @@ const handleInviteSubmit = async () => {
           <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 h-4 w-4 transition-colors" />
           <Input
             v-model.trim="searchQuery"
-            placeholder="搜索邮箱/空间名称..."
+            placeholder="搜索邮箱..."
             class="pl-9 h-11 bg-white border-transparent shadow-[0_2px_10px_rgba(0,0,0,0.03)] focus:shadow-[0_4px_12px_rgba(0,0,0,0.06)] rounded-xl transition-all"
             @keyup.enter="handleSearch"
           />
