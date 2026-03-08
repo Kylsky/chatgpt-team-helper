@@ -713,6 +713,8 @@ const loadAccounts = async () => {
         ...source,
         spaceType: source.spaceType || source.space_type || 'child',
         spaceName: String(source.spaceName ?? source.space_name ?? '').trim(),
+        matchedMemberLabel: String(source.matchedMemberLabel ?? source.matched_member_label ?? '').trim(),
+        matchedMemberCount: Number(source.matchedMemberCount ?? source.matched_member_count ?? 0),
         spaceStatusCode,
         spaceStatusReason,
         spaceStatus: { code: spaceStatusCode, reason: spaceStatusReason },
@@ -1570,12 +1572,21 @@ const handleInviteSubmit = async () => {
 	                    <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-xs font-bold text-gray-600">
 	                      {{ account.email.charAt(0).toUpperCase() }}
 	                    </div>
-	                    <span
-	                      class="text-sm font-medium"
-	                      :class="account.isBanned ? 'text-red-600' : 'text-gray-900'"
-	                    >
-	                      {{ account.email }}
-	                    </span>
+	                    <div>
+	                      <span
+	                        class="text-sm font-medium"
+	                        :class="account.isBanned ? 'text-red-600' : 'text-gray-900'"
+	                      >
+	                        {{ account.email }}
+	                      </span>
+	                      <p
+	                        v-if="memberSearchQuery.trim() && account.matchedMemberLabel"
+	                        class="text-xs text-indigo-600 mt-0.5"
+	                      >
+	                        命中成员：{{ account.matchedMemberLabel }}
+	                        <span v-if="Number(account.matchedMemberCount || 0) > 1">（{{ account.matchedMemberCount }} 条）</span>
+	                      </p>
+	                    </div>
 	                  </div>
 	                </td>
                 <td class="px-6 py-5 text-sm text-gray-500">
@@ -1695,6 +1706,13 @@ const handleInviteSubmit = async () => {
                  </div>
                  <div>
                     <p class="text-sm font-bold break-all" :class="account.isBanned ? 'text-red-600' : 'text-gray-900'">{{ account.email }}</p>
+                    <p
+                      v-if="memberSearchQuery.trim() && account.matchedMemberLabel"
+                      class="text-xs text-indigo-600 mt-0.5"
+                    >
+                      命中成员：{{ account.matchedMemberLabel }}
+                      <span v-if="Number(account.matchedMemberCount || 0) > 1">（{{ account.matchedMemberCount }} 条）</span>
+                    </p>
                     <p class="text-xs text-gray-500 mt-0.5">{{ account.spaceName || '-' }}</p>
                     <p class="text-xs text-blue-500 font-medium mt-0.5">#{{ account.id }}</p>
                  </div>

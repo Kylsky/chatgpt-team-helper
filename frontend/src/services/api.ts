@@ -283,6 +283,8 @@ export interface GptAccount {
   spaceStatus?: { code: 'normal' | 'abnormal' | 'unknown'; reason: string }
   spaceStatusCode?: 'normal' | 'abnormal' | 'unknown'
   spaceStatusReason?: string
+  matchedMemberLabel?: string
+  matchedMemberCount?: number
   createdAt: string
   updatedAt: string
 }

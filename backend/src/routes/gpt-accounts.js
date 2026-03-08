@@ -555,6 +555,35 @@ router.get('/', async (req, res) => {
       params.push(normalizedSpaceType)
     }
 
+    const hasMemberSearch = Boolean(memberSearch)
+    const memberSearchPattern = `%${memberSearch}%`
+    const matchedMemberSelectClause = hasMemberSearch
+      ? `
+               (
+                 SELECT COALESCE(NULLIF(gm.name, ''), NULLIF(gm.email, ''), NULLIF(gm.member_id, ''), '')
+                 FROM gpt_account_members gm
+                 WHERE gm.account_id = gpt_accounts.id
+                   AND (
+                     LOWER(COALESCE(gm.email, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.name, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+                   )
+                 ORDER BY COALESCE(gm.updated_at, gm.synced_at) DESC, gm.id DESC
+                 LIMIT 1
+               ) AS matched_member_label,
+               (
+                 SELECT COUNT(*)
+                 FROM gpt_account_members gm
+                 WHERE gm.account_id = gpt_accounts.id
+                   AND (
+                     LOWER(COALESCE(gm.email, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.name, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+                   )
+               ) AS matched_member_count`
+      : `'' AS matched_member_label,
+               0 AS matched_member_count`
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
     // 查询总数
@@ -574,12 +603,25 @@ router.get('/', async (req, res) => {
                COALESCE(space_status_code, 'unknown') AS space_status_code,
                space_status_reason,
                COALESCE(space_name, '') AS space_name,
-               created_at, updated_at
+               created_at, updated_at,
+               ${matchedMemberSelectClause}
         FROM gpt_accounts
         ${whereClause}
         ORDER BY COALESCE(sort_order, id) ASC, created_at DESC, id ASC
         LIMIT ? OFFSET ?
-      `, [...params, pageSize, offset])
+      `, [
+        ...params,
+        ...(hasMemberSearch ? [
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+        ] : []),
+        pageSize,
+        offset
+      ])
     } catch (error) {
       console.warn('[GptAccounts] fallback list query (legacy schema):', error?.message || error)
       dataResult = db.exec(`
@@ -588,22 +630,37 @@ router.get('/', async (req, res) => {
                COALESCE(is_banned, 0) AS is_banned,
                COALESCE(sort_order, id) AS sort_order,
                COALESCE(space_name, '') AS space_name,
-               created_at, updated_at
+               created_at, updated_at,
+               ${matchedMemberSelectClause}
         FROM gpt_accounts
         ${whereClause}
         ORDER BY COALESCE(sort_order, id) ASC, created_at DESC, id ASC
         LIMIT ? OFFSET ?
-      `, [...params, pageSize, offset])
+      `, [
+        ...params,
+        ...(hasMemberSearch ? [
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+        ] : []),
+        pageSize,
+        offset
+      ])
     }
 
     const accounts = (dataResult[0]?.values || []).map(row => {
-      const hasStatusColumns = row.length >= 19
+      const hasStatusColumns = row.length >= 21
       const spaceType = hasStatusColumns ? (row[13] || SPACE_TYPE_CHILD) : SPACE_TYPE_CHILD
       const spaceStatusCode = hasStatusColumns ? (row[14] || 'normal') : 'normal'
       const spaceStatusReason = hasStatusColumns ? (row[15] || '') : ''
       const spaceName = hasStatusColumns ? (row[16] || '') : (row[13] || '')
       const createdAt = hasStatusColumns ? row[17] : row[14]
       const updatedAt = hasStatusColumns ? row[18] : row[15]
+      const matchedMemberLabel = String(row[row.length - 2] || '').trim()
+      const matchedMemberCount = Number(row[row.length - 1] || 0)
 
       return {
         id: row[0],
@@ -622,6 +679,8 @@ router.get('/', async (req, res) => {
         spaceStatusCode,
         spaceStatusReason,
         spaceName,
+        matchedMemberLabel,
+        matchedMemberCount,
         createdAt,
         updatedAt,
         spaceStatus: resolveSpaceStatus({

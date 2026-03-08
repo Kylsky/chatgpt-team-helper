@@ -9,5 +9,7 @@ assert.match(source, /gm\.account_id = gpt_accounts\.id/, '成员搜索应与账
 assert.match(source, /LOWER\(COALESCE\(gm\.email, ''\)\) LIKE \?/, '成员搜索应支持邮箱模糊匹配')
 assert.match(source, /LOWER\(COALESCE\(gm\.name, ''\)\) LIKE \?/, '成员搜索应支持昵称模糊匹配')
 assert.match(source, /LOWER\(COALESCE\(gm\.member_id, ''\)\) LIKE \?/, '成员搜索应支持成员ID模糊匹配')
+assert.match(source, /AS matched_member_label/, '成员搜索结果应返回命中成员提示文案')
+assert.match(source, /AS matched_member_count/, '成员搜索结果应返回命中成员数量')
 
 console.log('gpt-accounts-member-search tests passed')
