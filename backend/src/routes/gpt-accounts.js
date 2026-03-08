@@ -496,6 +496,7 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10))
     const search = (req.query.search || '').trim().toLowerCase()
+    const memberSearch = (req.query.memberSearch || req.query.member_search || '').trim().toLowerCase()
     const openStatus = req.query.openStatus // 'open' | 'closed' | undefined
     const rawSpaceStatus = req.query.spaceStatus ?? req.query.space_status
     const hasSpaceStatus = rawSpaceStatus != null && String(rawSpaceStatus).trim() !== ''
@@ -520,6 +521,21 @@ router.get('/', async (req, res) => {
       params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
     }
 
+    if (memberSearch) {
+      conditions.push(`EXISTS (
+        SELECT 1
+        FROM gpt_account_members gm
+        WHERE gm.account_id = gpt_accounts.id
+          AND (
+            LOWER(COALESCE(gm.email, '')) LIKE ?
+            OR LOWER(COALESCE(gm.name, '')) LIKE ?
+            OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+          )
+      )`)
+      const memberSearchPattern = `%${memberSearch}%`
+      params.push(memberSearchPattern, memberSearchPattern, memberSearchPattern)
+    }
+
     if (openStatus === 'open') {
       conditions.push('is_open = 1')
     } else if (openStatus === 'closed') {
@@ -538,6 +554,35 @@ router.get('/', async (req, res) => {
       conditions.push(`COALESCE(space_type, '${SPACE_TYPE_CHILD}') = ?`)
       params.push(normalizedSpaceType)
     }
+
+    const hasMemberSearch = Boolean(memberSearch)
+    const memberSearchPattern = `%${memberSearch}%`
+    const matchedMemberSelectClause = hasMemberSearch
+      ? `
+               (
+                 SELECT COALESCE(NULLIF(gm.name, ''), NULLIF(gm.email, ''), NULLIF(gm.member_id, ''), '')
+                 FROM gpt_account_members gm
+                 WHERE gm.account_id = gpt_accounts.id
+                   AND (
+                     LOWER(COALESCE(gm.email, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.name, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+                   )
+                 ORDER BY COALESCE(gm.updated_at, gm.synced_at) DESC, gm.id DESC
+                 LIMIT 1
+               ) AS matched_member_label,
+               (
+                 SELECT COUNT(*)
+                 FROM gpt_account_members gm
+                 WHERE gm.account_id = gpt_accounts.id
+                   AND (
+                     LOWER(COALESCE(gm.email, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.name, '')) LIKE ?
+                     OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+                   )
+               ) AS matched_member_count`
+      : `'' AS matched_member_label,
+               0 AS matched_member_count`
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
@@ -558,12 +603,25 @@ router.get('/', async (req, res) => {
                COALESCE(space_status_code, 'unknown') AS space_status_code,
                space_status_reason,
                COALESCE(space_name, '') AS space_name,
-               created_at, updated_at
+               created_at, updated_at,
+               ${matchedMemberSelectClause}
         FROM gpt_accounts
         ${whereClause}
         ORDER BY COALESCE(sort_order, id) ASC, created_at DESC, id ASC
         LIMIT ? OFFSET ?
-      `, [...params, pageSize, offset])
+      `, [
+        ...params,
+        ...(hasMemberSearch ? [
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+        ] : []),
+        pageSize,
+        offset
+      ])
     } catch (error) {
       console.warn('[GptAccounts] fallback list query (legacy schema):', error?.message || error)
       dataResult = db.exec(`
@@ -572,22 +630,37 @@ router.get('/', async (req, res) => {
                COALESCE(is_banned, 0) AS is_banned,
                COALESCE(sort_order, id) AS sort_order,
                COALESCE(space_name, '') AS space_name,
-               created_at, updated_at
+               created_at, updated_at,
+               ${matchedMemberSelectClause}
         FROM gpt_accounts
         ${whereClause}
         ORDER BY COALESCE(sort_order, id) ASC, created_at DESC, id ASC
         LIMIT ? OFFSET ?
-      `, [...params, pageSize, offset])
+      `, [
+        ...params,
+        ...(hasMemberSearch ? [
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+          memberSearchPattern,
+        ] : []),
+        pageSize,
+        offset
+      ])
     }
 
     const accounts = (dataResult[0]?.values || []).map(row => {
-      const hasStatusColumns = row.length >= 19
+      const hasStatusColumns = row.length >= 21
       const spaceType = hasStatusColumns ? (row[13] || SPACE_TYPE_CHILD) : SPACE_TYPE_CHILD
       const spaceStatusCode = hasStatusColumns ? (row[14] || 'normal') : 'normal'
       const spaceStatusReason = hasStatusColumns ? (row[15] || '') : ''
       const spaceName = hasStatusColumns ? (row[16] || '') : (row[13] || '')
       const createdAt = hasStatusColumns ? row[17] : row[14]
       const updatedAt = hasStatusColumns ? row[18] : row[15]
+      const matchedMemberLabel = String(row[row.length - 2] || '').trim()
+      const matchedMemberCount = Number(row[row.length - 1] || 0)
 
       return {
         id: row[0],
@@ -606,6 +679,8 @@ router.get('/', async (req, res) => {
         spaceStatusCode,
         spaceStatusReason,
         spaceName,
+        matchedMemberLabel,
+        matchedMemberCount,
         createdAt,
         updatedAt,
         spaceStatus: resolveSpaceStatus({
@@ -1317,6 +1392,69 @@ router.post('/:id/sync-user-count', async (req, res) => {
     }
 
     res.status(500).json({ error: '内部服务器错误' })
+  }
+})
+
+// 读取成员缓存（不触发远程同步）
+router.get('/:id/members', async (req, res) => {
+  try {
+    const accountId = Number(req.params.id)
+    if (!Number.isFinite(accountId) || accountId <= 0) {
+      return res.status(400).json({ error: '账号ID无效' })
+    }
+
+    const offset = Math.max(0, Number(req.query.offset) || 0)
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100))
+    const query = String(req.query.query || '').trim().toLowerCase()
+
+    const db = await getDatabase()
+    const accountResult = db.exec('SELECT id FROM gpt_accounts WHERE id = ? LIMIT 1', [accountId])
+    if (!accountResult[0]?.values?.length) {
+      return res.status(404).json({ error: '账号不存在' })
+    }
+
+    const conditions = ['account_id = ?']
+    const params = [accountId]
+    if (query) {
+      const likeValue = `%${query}%`
+      conditions.push('(LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(member_id) LIKE ?)')
+      params.push(likeValue, likeValue, likeValue)
+    }
+    const whereClause = `WHERE ${conditions.join(' AND ')}`
+
+    const totalResult = db.exec(
+      `SELECT COUNT(*) FROM gpt_account_members ${whereClause}`,
+      params
+    )
+    const total = Number(totalResult[0]?.values?.[0]?.[0] || 0)
+
+    const rowsResult = db.exec(
+      `
+        SELECT member_id, email, role, name, created_time, is_scim_managed
+        FROM gpt_account_members
+        ${whereClause}
+        ORDER BY created_time DESC, member_id ASC
+        LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset]
+    )
+
+    const items = (rowsResult[0]?.values || []).map(row => ({
+      id: String(row[0] || ''),
+      account_user_id: String(row[0] || ''),
+      email: row[1] ? String(row[1]) : '',
+      role: row[2] ? String(row[2]) : '',
+      name: row[3] ? String(row[3]) : '',
+      created_time: row[4] ? String(row[4]) : '',
+      is_scim_managed: Number(row[5] || 0) > 0,
+    }))
+
+    const protectedEmailSet = await getProtectedSeatEmailSet(db)
+    const usersWithProtectionTag = appendProtectedMemberSuffix({ items, total, limit, offset }, protectedEmailSet)
+    return res.json(usersWithProtectionTag)
+  } catch (error) {
+    console.error('读取成员缓存失败:', error)
+    return res.status(500).json({ error: '内部服务器错误' })
   }
 })
 

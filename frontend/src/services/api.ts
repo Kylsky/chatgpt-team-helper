@@ -283,6 +283,8 @@ export interface GptAccount {
   spaceStatus?: { code: 'normal' | 'abnormal' | 'unknown'; reason: string }
   spaceStatusCode?: 'normal' | 'abnormal' | 'unknown'
   spaceStatusReason?: string
+  matchedMemberLabel?: string
+  matchedMemberCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -1508,6 +1510,7 @@ export interface GptAccountsListParams {
   page?: number
   pageSize?: number
   search?: string
+  memberSearch?: string
   openStatus?: 'open' | 'closed'
   spaceType?: 'mother' | 'child'
   spaceStatus?: 'normal' | 'abnormal' | 'unknown'
@@ -1617,6 +1620,11 @@ export const gptAccountService = {
 
   async getInvites(accountId: number, params?: { offset?: number; limit?: number; query?: string }): Promise<ChatgptAccountInvitesResponse> {
     const response = await api.get(`/gpt-accounts/${accountId}/invites`, { params })
+    return response.data
+  },
+
+  async getMembers(accountId: number, params?: { offset?: number; limit?: number; query?: string }): Promise<ChatgptAccountUsersResponse> {
+    const response = await api.get(`/gpt-accounts/${accountId}/members`, { params })
     return response.data
   }
 }
