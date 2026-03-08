@@ -42,6 +42,7 @@ const paginationMeta = ref({ page: 1, pageSize: 10, total: 0 })
 
 // 搜索和筛选状态
 const searchQuery = ref('')
+const memberSearchQuery = ref('')
 const openStatusFilter = ref<'all' | 'open' | 'closed'>('all')
 const spaceTypeFilter = ref<'mother' | 'child'>('child')
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -160,10 +161,6 @@ onUnmounted(() => {
   }
   clearSyncAllPanelAutoHideTimer()
   cancelResyncAfterAction()
-  if (memberSearchDebounceTimer) {
-    clearTimeout(memberSearchDebounceTimer)
-    memberSearchDebounceTimer = null
-  }
 })
 
 // 计算总页数
@@ -188,9 +185,7 @@ const banningAccountId = ref<number | null>(null)
 // Tab 和 邀请列表状态
 const activeTab = ref<'members' | 'invites'>('members')
 const membersList = ref<SyncUserCountResponse['users']['items']>([])
-const memberSearchQuery = ref('')
 const loadingMembers = ref(false)
-let memberSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 const invitesList = ref<ChatgptAccountInviteItem[]>([])
 const loadingInvites = ref(false)
 const resyncingAfterAction = ref(false)
@@ -695,6 +690,9 @@ const loadAccounts = async () => {
     if (searchQuery.value.trim()) {
       params.search = searchQuery.value.trim()
     }
+    if (memberSearchQuery.value.trim()) {
+      params.memberSearch = memberSearchQuery.value.trim()
+    }
     // 添加筛选参数
     if (openStatusFilter.value !== 'all') {
       params.openStatus = openStatusFilter.value
@@ -780,15 +778,13 @@ watch(searchQuery, () => {
 })
 
 watch(memberSearchQuery, () => {
-  if (!showSyncResultDialog.value || activeTab.value !== 'members') return
-  const accountId = syncResult.value?.account?.id
-  if (!accountId) return
-  if (memberSearchDebounceTimer) {
-    clearTimeout(memberSearchDebounceTimer)
+  paginationMeta.value.page = 1
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
   }
-  memberSearchDebounceTimer = setTimeout(() => {
-    loadMembers(accountId)
-    memberSearchDebounceTimer = null
+  searchDebounceTimer = setTimeout(() => {
+    loadAccounts()
+    searchDebounceTimer = null
   }, 300)
 })
 
@@ -1039,7 +1035,7 @@ const loadMembers = async (accountId: number) => {
     const response = await gptAccountService.getMembers(accountId, {
       offset: 0,
       limit: 200,
-      query: memberSearchQuery.value.trim(),
+      query: '',
     })
     membersList.value = Array.isArray(response.items) ? response.items : []
   } catch (err: any) {
@@ -1158,7 +1154,6 @@ const handleSyncAllSpaces = async () => {
 const handleShowMembers = async (account: GptAccount) => {
   cancelResyncAfterAction()
   syncingAccountId.value = account.id
-  memberSearchQuery.value = ''
   membersList.value = []
   syncError.value = ''
   syncResult.value = {
@@ -1242,7 +1237,6 @@ const closeSyncResultDialog = () => {
   showSyncResultDialog.value = false
   syncResult.value = null
   syncError.value = ''
-  memberSearchQuery.value = ''
   membersList.value = []
   previousUserCount.value = null
   previousInviteCount.value = null
@@ -1454,6 +1448,15 @@ const handleInviteSubmit = async () => {
             placeholder="搜索邮箱/空间名称..."
             class="pl-9 h-11 bg-white border-transparent shadow-[0_2px_10px_rgba(0,0,0,0.03)] focus:shadow-[0_4px_12px_rgba(0,0,0,0.06)] rounded-xl transition-all"
             @keyup.enter="handleSearch"
+          />
+        </div>
+
+        <div class="relative group w-full sm:w-72">
+          <Users class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 h-4 w-4 transition-colors" />
+          <Input
+            v-model.trim="memberSearchQuery"
+            placeholder="按成员邮箱/昵称/ID搜索空间..."
+            class="pl-9 h-11 bg-white border-transparent shadow-[0_2px_10px_rgba(0,0,0,0.03)] focus:shadow-[0_4px_12px_rgba(0,0,0,0.06)] rounded-xl transition-all"
           />
         </div>
 
@@ -2181,13 +2184,6 @@ const handleInviteSubmit = async () => {
                  </div>
 
                  <!-- Members Table -->
-                 <div v-show="activeTab === 'members'">
-                    <Input
-                      v-model.trim="memberSearchQuery"
-                      placeholder="搜索成员邮箱 / 昵称 / ID"
-                      class="bg-white"
-                    />
-                 </div>
                  <div v-show="activeTab === 'members'" class="border border-gray-100 rounded-xl overflow-hidden">
                     <div v-if="loadingMembers" class="p-8 flex justify-center">
                       <div class="w-6 h-6 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>

@@ -496,6 +496,7 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1)
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 10))
     const search = (req.query.search || '').trim().toLowerCase()
+    const memberSearch = (req.query.memberSearch || req.query.member_search || '').trim().toLowerCase()
     const openStatus = req.query.openStatus // 'open' | 'closed' | undefined
     const rawSpaceStatus = req.query.spaceStatus ?? req.query.space_status
     const hasSpaceStatus = rawSpaceStatus != null && String(rawSpaceStatus).trim() !== ''
@@ -518,6 +519,21 @@ router.get('/', async (req, res) => {
       conditions.push(`(LOWER(email) LIKE ? OR LOWER(space_name) LIKE ? OR LOWER(token) LIKE ? OR LOWER(refresh_token) LIKE ? OR LOWER(chatgpt_account_id) LIKE ?)`)
       const searchPattern = `%${search}%`
       params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
+    }
+
+    if (memberSearch) {
+      conditions.push(`EXISTS (
+        SELECT 1
+        FROM gpt_account_members gm
+        WHERE gm.account_id = gpt_accounts.id
+          AND (
+            LOWER(COALESCE(gm.email, '')) LIKE ?
+            OR LOWER(COALESCE(gm.name, '')) LIKE ?
+            OR LOWER(COALESCE(gm.member_id, '')) LIKE ?
+          )
+      )`)
+      const memberSearchPattern = `%${memberSearch}%`
+      params.push(memberSearchPattern, memberSearchPattern, memberSearchPattern)
     }
 
     if (openStatus === 'open') {

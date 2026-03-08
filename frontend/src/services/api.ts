@@ -1508,6 +1508,7 @@ export interface GptAccountsListParams {
   page?: number
   pageSize?: number
   search?: string
+  memberSearch?: string
   openStatus?: 'open' | 'closed'
   spaceType?: 'mother' | 'child'
   spaceStatus?: 'normal' | 'abnormal' | 'unknown'
