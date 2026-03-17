@@ -1,0 +1,112 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: team-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oai123456}
+      POSTGRES_DB: ${POSTGRES_DB:-oai_pipeline}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pipeline-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-oai} -d ${POSTGRES_DB:-oai_pipeline}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: team-redis
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - pipeline-redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  node-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: team-node-web
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_PATH: ${DATABASE_PATH:-/app/backend/db/database.sqlite}
+      JWT_SECRET: ${JWT_SECRET:-please-change-me}
+      INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD:-admin123}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-please-change-me}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      QUEUE_CANCEL_JOBS: ${QUEUE_CANCEL_JOBS:-oai:queue:cancel_sub}
+      ACCOUNT_LIVENESS_PROBE_ENABLED: ${ACCOUNT_LIVENESS_PROBE_ENABLED:-true}
+      ACCOUNT_LIVENESS_PROBE_INTERVAL_SECONDS: ${ACCOUNT_LIVENESS_PROBE_INTERVAL_SECONDS:-300}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - '${NODE_WEB_PORT:-5173}:5173'
+    volumes:
+      - ./data:/app/backend/db
+    restart: unless-stopped
+
+  go-worker:
+    image: golang:1.25
+    container_name: team-go-worker
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_URL: ${DB_URL:-postgres://oai:oai123456@postgres:5432/oai_pipeline?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      QUEUE_NEW_ACCOUNTS: ${QUEUE_NEW_ACCOUNTS:-oai:queue:new_accounts}
+      GO_MAX_WORKERS: ${GO_MAX_WORKERS:-3}
+      GO_TARGET_ACCOUNTS: ${GO_TARGET_ACCOUNTS:-10}
+    command: >-
+      sh -lc "go mod download && go run ./cmd/register"
+    volumes:
+      - ${TEAM_CREATOR_DIR:-/Users/yizhi/team/chatgpt-creator}:/workspace
+    restart: unless-stopped
+
+  python-binder:
+    image: python:3.13-slim
+    container_name: team-python-binder
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      node-web:
+        condition: service_started
+    environment:
+      DB_URL: ${DB_URL:-postgres://oai:oai123456@postgres:5432/oai_pipeline}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      QUEUE_NEW_ACCOUNTS: ${QUEUE_NEW_ACCOUNTS:-oai:queue:new_accounts}
+      QUEUE_CANCEL_JOBS: ${QUEUE_CANCEL_JOBS:-oai:queue:cancel_sub}
+      PYTHON_NODE_API_URL: ${PYTHON_NODE_API_URL:-http://node-web:3000}
+      PYTHON_NODE_API_TOKEN: ${PYTHON_NODE_API_TOKEN:-please-change-me}
+      PYTHON_TEAM_NAME_PREFIX: ${PYTHON_TEAM_NAME_PREFIX:-TeamAuto}
+      PYTHON_TEAM_SEATS: ${PYTHON_TEAM_SEATS:-2}
+    command: >-
+      sh -lc "pip install --no-cache-dir uv && uv sync && uv run python main.py --mode worker"
+    volumes:
+      - ${TEAM_BINDER_DIR:-/Users/yizhi/team/gpt-auto-register}:/workspace
+    restart: unless-stopped
+
+volumes:
+  pipeline-postgres-data:
+  pipeline-redis-data:

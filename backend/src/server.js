@@ -20,6 +20,7 @@ import adminRoutes from './routes/admin.js'
 import adminStatsRoutes from './routes/admin-stats.js'
 import announcementsRoutes from './routes/announcements.js'
 import adminAnnouncementsRoutes from './routes/admin-announcements.js'
+import internalAccountsRoutes from './routes/internal-accounts.js'
 import { initDatabase } from './database/init.js'
 import { startWaitingRoomAutoBoardingScheduler } from './services/waiting-room-auto-boarding.js'
 import { startOpenAccountsOvercapacitySweeper } from './services/open-accounts-sweeper.js'
@@ -29,6 +30,7 @@ import { startTelegramBot } from './services/telegram-bot.js'
 import { startXianyuLoginRefreshScheduler } from './services/xianyu-login-refresh.js'
 import { startXhsAutoSyncScheduler } from './services/xhs-auto-sync.js'
 import { startXianyuWsDeliveryBot } from './services/xianyu-ws-delivery.js'
+import { startAccountLivenessProbe } from './services/account-liveness-probe.js'
 
 dotenv.config()
 
@@ -75,7 +77,7 @@ app.use(
       return callback(null, corsOrigins.has(origin))
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Linuxdo-Token'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Linuxdo-Token', 'X-Internal-Token'],
     credentials: false,
     maxAge: 86400
   })
@@ -111,6 +113,7 @@ initDatabase()
 	    startXianyuLoginRefreshScheduler()
 	    startXianyuWsDeliveryBot()
 	    startXhsAutoSyncScheduler()
+      startAccountLivenessProbe()
 
 	    startServer()
 	  })
@@ -136,6 +139,7 @@ app.use('/api/xianyu', xianyuRoutes)
 app.use('/api/open-accounts', openAccountsRoutes)
 app.use('/api/purchase', purchaseRoutes)
 app.use('/api/credit', creditRoutes)
+app.use('/api/internal/accounts', internalAccountsRoutes)
 app.use('/api/admin/stats', adminStatsRoutes)
 app.use('/api/admin/announcements', adminAnnouncementsRoutes)
 app.use('/api/admin', adminRoutes)

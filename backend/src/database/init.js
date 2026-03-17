@@ -2032,6 +2032,18 @@ export async function initDatabase() {
               saveDatabase()
             }
 
+            if (!columns.includes('password')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN password TEXT')
+              console.log('已添加 password 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('team_name')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN team_name TEXT')
+              console.log('已添加 team_name 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
             if (!columns.includes('oai_device_id')) {
               database.run('ALTER TABLE gpt_accounts ADD COLUMN oai_device_id TEXT')
               console.log('已添加 oai_device_id 列到 gpt_accounts 表')
@@ -2041,6 +2053,12 @@ export async function initDatabase() {
             if (!columns.includes('refresh_token')) {
               database.run('ALTER TABLE gpt_accounts ADD COLUMN refresh_token TEXT')
               console.log('已添加 refresh_token 列到 gpt_accounts 表')
+              saveDatabase()
+            }
+
+            if (!columns.includes('session_token')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN session_token TEXT')
+              console.log('已添加 session_token 列到 gpt_accounts 表')
               saveDatabase()
             }
 
@@ -2080,6 +2098,12 @@ export async function initDatabase() {
 	              console.log('已添加 ban_processed 列到 gpt_accounts 表')
 	              saveDatabase()
 	            }
+
+            if (!columns.includes('card_last4')) {
+              database.run('ALTER TABLE gpt_accounts ADD COLUMN card_last4 TEXT')
+              console.log('已添加 card_last4 列到 gpt_accounts 表')
+              saveDatabase()
+            }
 	          }
 
 	          // 检查 redemption_codes 表的列
@@ -2211,8 +2235,11 @@ export async function initDatabase() {
 	    CREATE TABLE IF NOT EXISTS gpt_accounts (
 	      id INTEGER PRIMARY KEY AUTOINCREMENT,
 	      email TEXT NOT NULL,
+	      password TEXT,
+	      team_name TEXT,
 	      token TEXT NOT NULL,
 	      refresh_token TEXT,
+	      session_token TEXT,
 	      user_count INTEGER DEFAULT 0,
 	      invite_count INTEGER DEFAULT 0,
 	      chatgpt_account_id TEXT,
@@ -2222,6 +2249,7 @@ export async function initDatabase() {
 	      is_demoted INTEGER DEFAULT 0,
 	      is_banned INTEGER DEFAULT 0,
 	      ban_processed INTEGER DEFAULT 0,
+	      card_last4 TEXT,
 	      created_at DATETIME DEFAULT (DATETIME('now', 'localtime')),
 	      updated_at DATETIME DEFAULT (DATETIME('now', 'localtime'))
 	    )
@@ -2274,25 +2302,40 @@ export async function initDatabase() {
     if (tableInfo.length > 0) {
       const columns = tableInfo[0].values.map(row => row[1])
 
-      if (!columns.includes('chatgpt_account_id')) {
-        database.run('ALTER TABLE gpt_accounts ADD COLUMN chatgpt_account_id TEXT')
-        console.log('已添加 chatgpt_account_id 列到 gpt_accounts 表')
-      }
+          if (!columns.includes('chatgpt_account_id')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN chatgpt_account_id TEXT')
+            console.log('已添加 chatgpt_account_id 列到 gpt_accounts 表')
+          }
 
-      if (!columns.includes('oai_device_id')) {
-        database.run('ALTER TABLE gpt_accounts ADD COLUMN oai_device_id TEXT')
-        console.log('已添加 oai_device_id 列到 gpt_accounts 表')
-      }
+          if (!columns.includes('password')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN password TEXT')
+            console.log('已添加 password 列到 gpt_accounts 表')
+          }
 
-      if (!columns.includes('refresh_token')) {
-        database.run('ALTER TABLE gpt_accounts ADD COLUMN refresh_token TEXT')
-        console.log('已添加 refresh_token 列到 gpt_accounts 表')
-      }
+          if (!columns.includes('team_name')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN team_name TEXT')
+            console.log('已添加 team_name 列到 gpt_accounts 表')
+          }
 
-      if (!columns.includes('invite_count')) {
-        database.run('ALTER TABLE gpt_accounts ADD COLUMN invite_count INTEGER DEFAULT 0')
-        console.log('已添加 invite_count 列到 gpt_accounts 表')
-      }
+          if (!columns.includes('oai_device_id')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN oai_device_id TEXT')
+            console.log('已添加 oai_device_id 列到 gpt_accounts 表')
+          }
+
+          if (!columns.includes('refresh_token')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN refresh_token TEXT')
+            console.log('已添加 refresh_token 列到 gpt_accounts 表')
+          }
+
+          if (!columns.includes('session_token')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN session_token TEXT')
+            console.log('已添加 session_token 列到 gpt_accounts 表')
+          }
+
+          if (!columns.includes('invite_count')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN invite_count INTEGER DEFAULT 0')
+            console.log('已添加 invite_count 列到 gpt_accounts 表')
+          }
 
       if (!columns.includes('is_open')) {
         database.run('ALTER TABLE gpt_accounts ADD COLUMN is_open INTEGER DEFAULT 0')
@@ -2319,6 +2362,11 @@ export async function initDatabase() {
 	        database.run('ALTER TABLE gpt_accounts ADD COLUMN ban_processed INTEGER DEFAULT 0')
 	        console.log('已添加 ban_processed 列到 gpt_accounts 表')
 	      }
+
+          if (!columns.includes('card_last4')) {
+            database.run('ALTER TABLE gpt_accounts ADD COLUMN card_last4 TEXT')
+            console.log('已添加 card_last4 列到 gpt_accounts 表')
+          }
 	    }
 	  } catch (err) {
 	    console.log('列检查/添加已跳过:', err.message)
