@@ -3,6 +3,8 @@ import crypto from 'crypto'
 import { getUpstreamSettings } from '../utils/upstream-settings.js'
 import { getPublicBaseUrlSettings } from '../utils/public-base-url.js'
 
+const UPSTREAM_PROVIDER_LOG_LABEL = '[UpstreamProvider]'
+
 export const UPSTREAM_PROVIDER_TYPES = {
   LOCAL: 'local',
   CUSTOM_HTTP: 'custom-http',
@@ -33,6 +35,153 @@ const toRawString = (value) => {
   } catch {
     return String(value)
   }
+}
+
+const parseBooleanEnv = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback
+  if (typeof value === 'boolean') return value
+  const normalized = String(value).trim().toLowerCase()
+  if (!normalized) return fallback
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false
+  return fallback
+}
+
+const isVerboseUpstreamProviderLogsEnabled = () => parseBooleanEnv(process.env.UPSTREAM_PROVIDER_VERBOSE_LOGS, false)
+
+const getUpstreamProviderLogSnippetLimit = () => {
+  const parsed = Number.parseInt(String(process.env.UPSTREAM_PROVIDER_LOG_SNIPPET_LIMIT ?? ''), 10)
+  if (!Number.isFinite(parsed)) return 1200
+  return Math.min(5000, Math.max(200, parsed))
+}
+
+const clipLogString = (value, limit = getUpstreamProviderLogSnippetLimit()) => {
+  const raw = String(value || '')
+  if (!raw) return ''
+  return raw.length > limit ? `${raw.slice(0, limit)}...` : raw
+}
+
+const maskEmailForLog = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const atIndex = raw.indexOf('@')
+  if (atIndex <= 0) return clipLogString(raw)
+  const local = raw.slice(0, atIndex)
+  const domain = raw.slice(atIndex + 1)
+  const visibleLocal = local.length <= 2 ? local[0] || '*' : local.slice(0, 2)
+  return `${visibleLocal}***@${domain}`
+}
+
+const maskCodeForLog = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const compact = raw.replace(/[^a-zA-Z0-9]/g, '')
+  if (compact.length <= 4) return '***'
+  if (compact.length <= 8) return `${compact.slice(0, 2)}***${compact.slice(-2)}`
+  return `${compact.slice(0, 4)}...${compact.slice(-4)}`
+}
+
+const maskSecretForLog = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (raw.length <= 6) return '***'
+  return `${raw.slice(0, 2)}***${raw.slice(-2)}`
+}
+
+const shouldMaskAsSecret = (key) => {
+  const normalized = String(key || '').trim().toLowerCase()
+  if (!normalized) return false
+  if (normalized.includes('authorization')) return true
+  if (normalized.includes('token')) return true
+  if (normalized.includes('secret')) return true
+  if (normalized.includes('password')) return true
+  if (normalized.includes('apikey')) return true
+  if (normalized.endsWith('_key') || normalized.endsWith('-key')) return true
+  return false
+}
+
+const shouldMaskAsEmail = (key) => String(key || '').trim().toLowerCase().includes('email')
+
+const shouldMaskAsCode = (key) => {
+  const normalized = String(key || '').trim().toLowerCase()
+  return normalized === 'code'
+    || normalized === 'cardcode'
+    || normalized === 'publiccode'
+    || normalized === 'realcode'
+    || normalized === 'redeemcode'
+    || normalized === 'recoverycode'
+    || /(card|public|real|redeem|recovery)_?code$/.test(normalized)
+}
+
+const sanitizeForLog = (value, { key = '', depth = 0, seen } = {}) => {
+  if (value == null) return value
+  if (typeof value === 'string') {
+    if (shouldMaskAsSecret(key)) return maskSecretForLog(value)
+    if (shouldMaskAsEmail(key)) return maskEmailForLog(value)
+    if (shouldMaskAsCode(key)) return maskCodeForLog(value)
+    return clipLogString(value)
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (Array.isArray(value)) {
+    if (depth >= 4) return `[Array(${value.length})]`
+    return value.map(item => sanitizeForLog(item, { depth: depth + 1, seen }))
+  }
+  if (typeof value !== 'object') return clipLogString(String(value))
+
+  const refs = seen || new WeakSet()
+  if (refs.has(value)) return '[Circular]'
+  refs.add(value)
+
+  if (depth >= 4) return '[Object]'
+
+  return Object.fromEntries(
+    Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      sanitizeForLog(entryValue, { key: entryKey, depth: depth + 1, seen: refs })
+    ])
+  )
+}
+
+const sanitizeUrlForLog = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+
+  try {
+    const parsed = new URL(raw)
+    if (parsed.username) parsed.username = '***'
+    if (parsed.password) parsed.password = '***'
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      const current = parsed.searchParams.get(key)
+      if (shouldMaskAsSecret(key)) {
+        parsed.searchParams.set(key, '***')
+      } else if (shouldMaskAsEmail(key)) {
+        parsed.searchParams.set(key, maskEmailForLog(current))
+      } else if (shouldMaskAsCode(key)) {
+        parsed.searchParams.set(key, maskCodeForLog(current))
+      } else {
+        parsed.searchParams.set(key, clipLogString(current, 64))
+      }
+    }
+    return parsed.toString()
+  } catch {
+    return clipLogString(raw)
+  }
+}
+
+const buildRequestLogContext = ({ requestId, providerType, supplierName, requestUrl, timeoutMs, payload, headers }) => ({
+  requestId,
+  providerType,
+  supplierName: String(supplierName || '').trim(),
+  requestUrl: sanitizeUrlForLog(requestUrl),
+  timeoutMs: Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : null,
+  payload: sanitizeForLog(payload),
+  headers: sanitizeForLog(headers)
+})
+
+const logUpstreamProviderEvent = (level, event, payload, { verboseOnly = false } = {}) => {
+  if (verboseOnly && !isVerboseUpstreamProviderLogsEnabled()) return
+  const logger = typeof console[level] === 'function' ? console[level] : console.info
+  logger(UPSTREAM_PROVIDER_LOG_LABEL, event, payload)
 }
 
 const buildProviderResult = ({
@@ -210,6 +359,17 @@ async function redeemWithCustomHttp(settings, payload) {
     Origin: url.origin,
     Referer: `${url.origin}/`
   }
+  const requestLogContext = buildRequestLogContext({
+    requestId,
+    providerType: UPSTREAM_PROVIDER_TYPES.CUSTOM_HTTP,
+    supplierName: settings.supplierName,
+    requestUrl,
+    timeoutMs: settings.timeoutMs,
+    payload: requestBody.parsed,
+    headers
+  })
+
+  logUpstreamProviderEvent('info', 'custom-http redeem request', requestLogContext, { verboseOnly: true })
 
   try {
     const response = await axios.post(
@@ -225,7 +385,7 @@ async function redeemWithCustomHttp(settings, payload) {
     const explicitCode = response.data?.code
     const explicitMessage = String(response.data?.message || '').trim()
     if (explicitCode === 400 && isLegacyInvalidMessage(explicitMessage)) {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: false,
         status: 'invalid',
         retryable: false,
@@ -237,9 +397,20 @@ async function redeemWithCustomHttp(settings, payload) {
         responseRaw,
         data: response.data
       })
+      logUpstreamProviderEvent('warn', 'custom-http redeem rejected', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        retryable: result.retryable,
+        message: result.message,
+        responseBody: sanitizeForLog(response.data),
+        responseRawSnippet: clipLogString(responseRaw)
+      })
+      return result
     }
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: true,
       status: 'success',
       retryable: false,
@@ -252,6 +423,16 @@ async function redeemWithCustomHttp(settings, payload) {
       responseRaw,
       data: response.data
     })
+    logUpstreamProviderEvent('info', 'custom-http redeem success', {
+      ...requestLogContext,
+      httpStatus: response.status,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      message: result.message,
+      responseBody: sanitizeForLog(response.data),
+      responseRawSnippet: clipLogString(responseRaw)
+    }, { verboseOnly: true })
+    return result
   } catch (error) {
     const responseStatus = error.response?.status
     const responseData = error.response?.data
@@ -260,7 +441,7 @@ async function redeemWithCustomHttp(settings, payload) {
     const explicitMessage = String(responseData?.message || responseData?.error || error.message || '').trim()
 
     if (Number(explicitCode) === 400 && isLegacyInvalidMessage(explicitMessage)) {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: false,
         status: 'invalid',
         retryable: false,
@@ -272,9 +453,21 @@ async function redeemWithCustomHttp(settings, payload) {
         responseRaw,
         data: responseData
       })
+      logUpstreamProviderEvent('warn', 'custom-http redeem rejected', {
+        ...requestLogContext,
+        axiosCode: String(error.code || ''),
+        httpStatus: responseStatus || null,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        retryable: result.retryable,
+        message: result.message,
+        responseBody: sanitizeForLog(responseData),
+        responseRawSnippet: clipLogString(responseRaw)
+      })
+      return result
     }
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: false,
       status: 'failed',
       retryable: true,
@@ -286,6 +479,18 @@ async function redeemWithCustomHttp(settings, payload) {
       responseRaw,
       data: responseData
     })
+    logUpstreamProviderEvent('warn', 'custom-http redeem failure', {
+      ...requestLogContext,
+      axiosCode: String(error.code || ''),
+      httpStatus: responseStatus || null,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      retryable: result.retryable,
+      message: result.message,
+      responseBody: sanitizeForLog(responseData),
+      responseRawSnippet: clipLogString(responseRaw)
+    })
+    return result
   }
 }
 
@@ -306,15 +511,27 @@ async function redeemWithPlatformUpstream(settings, payload) {
   }
 
   const headers = await buildPlatformUpstreamHeaders(settings)
+  const requestPayload = {
+    email: payload.email,
+    code: payload.code,
+    channel: payload.channel || 'common'
+  }
+  const requestLogContext = buildRequestLogContext({
+    requestId,
+    providerType: UPSTREAM_PROVIDER_TYPES.PLATFORM_UPSTREAM,
+    supplierName: settings.supplierName,
+    requestUrl,
+    timeoutMs: settings.timeoutMs,
+    payload: requestPayload,
+    headers
+  })
+
+  logUpstreamProviderEvent('info', 'platform-upstream redeem request', requestLogContext, { verboseOnly: true })
 
   try {
     const response = await axios.post(
       requestUrl,
-      {
-        email: payload.email,
-        code: payload.code,
-        channel: payload.channel || 'common'
-      },
+      requestPayload,
       {
         timeout: settings.timeoutMs,
         headers
@@ -327,7 +544,7 @@ async function redeemWithPlatformUpstream(settings, payload) {
     const message = String(body.message || '').trim()
 
     if (body.ok === true && status === 'success') {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: true,
         status: 'success',
         retryable: false,
@@ -340,10 +557,20 @@ async function redeemWithPlatformUpstream(settings, payload) {
         responseRaw,
         data: body
       })
+      logUpstreamProviderEvent('info', 'platform-upstream redeem success', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        message: result.message,
+        responseBody: sanitizeForLog(body),
+        responseRawSnippet: clipLogString(responseRaw)
+      }, { verboseOnly: true })
+      return result
     }
 
     if (status === 'invalid') {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: false,
         status: 'invalid',
         retryable: false,
@@ -355,9 +582,20 @@ async function redeemWithPlatformUpstream(settings, payload) {
         responseRaw,
         data: body
       })
+      logUpstreamProviderEvent('warn', 'platform-upstream redeem rejected', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        retryable: result.retryable,
+        message: result.message,
+        responseBody: sanitizeForLog(body),
+        responseRawSnippet: clipLogString(responseRaw)
+      })
+      return result
     }
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: false,
       status: 'failed',
       retryable: Boolean(body.retryable),
@@ -369,6 +607,17 @@ async function redeemWithPlatformUpstream(settings, payload) {
       responseRaw,
       data: body
     })
+    logUpstreamProviderEvent('warn', 'platform-upstream redeem failure', {
+      ...requestLogContext,
+      httpStatus: response.status,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      retryable: result.retryable,
+      message: result.message,
+      responseBody: sanitizeForLog(body),
+      responseRawSnippet: clipLogString(responseRaw)
+    })
+    return result
   } catch (error) {
     const responseStatus = error.response?.status
     const responseData = error.response?.data
@@ -376,7 +625,7 @@ async function redeemWithPlatformUpstream(settings, payload) {
     const normalizedStatus = String(responseData?.status || '').trim().toLowerCase()
     const message = String(responseData?.message || responseData?.error || error.message || '').trim()
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: false,
       status: normalizedStatus === 'invalid' ? 'invalid' : 'failed',
       retryable: normalizedStatus === 'invalid' ? false : true,
@@ -388,6 +637,18 @@ async function redeemWithPlatformUpstream(settings, payload) {
       responseRaw,
       data: responseData
     })
+    logUpstreamProviderEvent('warn', 'platform-upstream redeem failure', {
+      ...requestLogContext,
+      axiosCode: String(error.code || ''),
+      httpStatus: responseStatus || null,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      retryable: result.retryable,
+      message: result.message,
+      responseBody: sanitizeForLog(responseData),
+      responseRawSnippet: clipLogString(responseRaw)
+    })
+    return result
   }
 }
 
@@ -434,14 +695,26 @@ async function checkWithPlatformUpstream(settings, payload) {
   }
 
   const headers = await buildPlatformUpstreamHeaders(settings)
+  const requestPayload = {
+    code: payload.code,
+    channel: payload.channel || 'common'
+  }
+  const requestLogContext = buildRequestLogContext({
+    requestId,
+    providerType: UPSTREAM_PROVIDER_TYPES.PLATFORM_UPSTREAM,
+    supplierName: settings.supplierName,
+    requestUrl,
+    timeoutMs: settings.timeoutMs,
+    payload: requestPayload,
+    headers
+  })
+
+  logUpstreamProviderEvent('info', 'platform-upstream check request', requestLogContext, { verboseOnly: true })
 
   try {
     const response = await axios.post(
       requestUrl,
-      {
-        code: payload.code,
-        channel: payload.channel || 'common'
-      },
+      requestPayload,
       {
         timeout: settings.timeoutMs,
         headers
@@ -454,7 +727,7 @@ async function checkWithPlatformUpstream(settings, payload) {
     const message = String(body.message || '').trim()
 
     if (body.ok === true && status === 'available') {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: true,
         status: 'available',
         retryable: false,
@@ -466,10 +739,20 @@ async function checkWithPlatformUpstream(settings, payload) {
         responseRaw,
         data: body
       })
+      logUpstreamProviderEvent('info', 'platform-upstream check success', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        message: result.message,
+        responseBody: sanitizeForLog(body),
+        responseRawSnippet: clipLogString(responseRaw)
+      }, { verboseOnly: true })
+      return result
     }
 
     if (status === 'used') {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: false,
         status: 'used',
         retryable: false,
@@ -481,10 +764,21 @@ async function checkWithPlatformUpstream(settings, payload) {
         responseRaw,
         data: body
       })
+      logUpstreamProviderEvent('warn', 'platform-upstream check rejected', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        retryable: result.retryable,
+        message: result.message,
+        responseBody: sanitizeForLog(body),
+        responseRawSnippet: clipLogString(responseRaw)
+      })
+      return result
     }
 
     if (status === 'invalid') {
-      return buildProviderResult({
+      const result = buildProviderResult({
         ok: false,
         status: 'invalid',
         retryable: false,
@@ -496,9 +790,20 @@ async function checkWithPlatformUpstream(settings, payload) {
         responseRaw,
         data: body
       })
+      logUpstreamProviderEvent('warn', 'platform-upstream check rejected', {
+        ...requestLogContext,
+        httpStatus: response.status,
+        responseCode: result.responseCode,
+        providerStatus: result.status,
+        retryable: result.retryable,
+        message: result.message,
+        responseBody: sanitizeForLog(body),
+        responseRawSnippet: clipLogString(responseRaw)
+      })
+      return result
     }
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: false,
       status: 'failed',
       retryable: Boolean(body.retryable),
@@ -510,6 +815,17 @@ async function checkWithPlatformUpstream(settings, payload) {
       responseRaw,
       data: body
     })
+    logUpstreamProviderEvent('warn', 'platform-upstream check failure', {
+      ...requestLogContext,
+      httpStatus: response.status,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      retryable: result.retryable,
+      message: result.message,
+      responseBody: sanitizeForLog(body),
+      responseRawSnippet: clipLogString(responseRaw)
+    })
+    return result
   } catch (error) {
     const responseStatus = error.response?.status
     const responseData = error.response?.data
@@ -522,7 +838,7 @@ async function checkWithPlatformUpstream(settings, payload) {
         ? 'used'
         : 'failed'
 
-    return buildProviderResult({
+    const result = buildProviderResult({
       ok: false,
       status: resolvedStatus,
       retryable: resolvedStatus === 'failed',
@@ -534,6 +850,18 @@ async function checkWithPlatformUpstream(settings, payload) {
       responseRaw,
       data: responseData
     })
+    logUpstreamProviderEvent('warn', 'platform-upstream check failure', {
+      ...requestLogContext,
+      axiosCode: String(error.code || ''),
+      httpStatus: responseStatus || null,
+      responseCode: result.responseCode,
+      providerStatus: result.status,
+      retryable: result.retryable,
+      message: result.message,
+      responseBody: sanitizeForLog(responseData),
+      responseRawSnippet: clipLogString(responseRaw)
+    })
+    return result
   }
 }
 

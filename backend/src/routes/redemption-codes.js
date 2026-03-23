@@ -578,6 +578,18 @@ async function redeemExternalSupplierCode({
   })
   saveDatabase()
 
+  console.warn('[Redemption] external supplier fulfill failed', {
+    codeId: codeRecord.id,
+    channel: requestedChannel,
+    supplierName: providerResult.supplierName || '',
+    supplierType: providerResult.providerType || '',
+    supplierRequestId: providerResult.requestId || '',
+    supplierStatus: providerResult.status || SUPPLIER_STATUS_FAILED,
+    supplierResponseCode: providerResult.responseCode || '',
+    supplierResponseMessage: providerResult.message || '',
+    supplierResponseRawSnippet: truncateSupplierPayload(providerResult.responseRaw, 1200)
+  })
+
   throw new RedemptionError(
     providerResult.status === SUPPLIER_STATUS_INVALID ? 400 : 503,
     providerResult.message || '兑换失败，请稍后重试',
