@@ -18,7 +18,7 @@ import { RefreshCw, Search, RotateCcw, ShoppingCart, CheckCircle2, Clock, Ban, A
 
 const router = useRouter()
 const appConfigStore = useAppConfigStore()
-const { success: showSuccessToast, error: showErrorToast } = useToast()
+const { success: showSuccessToast, error: showErrorToast, info: showInfoToast, warning: showWarningToast } = useToast()
 
 const orders = ref<PurchaseOrder[]>([])
 const loading = ref(false)
@@ -33,6 +33,7 @@ const searchQuery = ref('')
 const appliedSearch = ref('')
 const statusFilter = ref<'all' | 'pending_payment' | 'paid' | 'refunded' | 'expired' | 'failed'>('all')
 const refundingOrderNo = ref<string | null>(null)
+const syncingOrderNo = ref<string | null>(null)
 
 // 计算总页数
 const totalPages = computed(() => Math.max(1, Math.ceil(paginationMeta.value.total / paginationMeta.value.pageSize)))
@@ -58,7 +59,7 @@ const buildSearchParams = (): PurchaseAdminOrdersParams => {
   return params
 }
 
-const dateFormatOptions =computed(() => ({
+const dateFormatOptions = computed(() => ({
   timeZone: appConfigStore.timezone,
   locale: appConfigStore.locale,
 }))
@@ -112,7 +113,7 @@ const statusLabel = (status?: string) => {
   if (status === 'refunded') return '已退款'
   if (status === 'expired') return '已过期'
   if (status === 'failed') return '失败'
- if (status === 'pending_payment') return '待支付'
+  if (status === 'pending_payment') return '待支付'
   if (status === 'created') return '已创建'
   return status || '未知'
 }
@@ -135,6 +136,8 @@ const sceneClass = (scene?: string) => (
     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
     : 'bg-slate-100 text-slate-700 border-slate-200'
 )
+
+const canSync = (order: PurchaseOrder) => ['created', 'pending_payment'].includes(String(order.status || ''))
 
 const loadOrders = async () => {
   loading.value = true
@@ -171,6 +174,44 @@ const handleRefund = async (orderNo: string) => {
     showErrorToast(message)
   } finally {
     refundingOrderNo.value = null
+  }
+}
+
+const handleSync = async (order: PurchaseOrder) => {
+  if (!canSync(order)) return
+
+  syncingOrderNo.value = order.orderNo
+  try {
+    const response = await purchaseService.getOrder(order.orderNo, order.email, { sync: true })
+    const syncedOrder = response.order
+
+    if (syncedOrder.status === 'paid') {
+      showSuccessToast(syncedOrder.redeemError
+        ? `已查到支付成功，后续已触发，但自动处理失败：${syncedOrder.redeemError}`
+        : syncedOrder.inviteStatus
+          ? `已查到支付成功，并已执行后续：${syncedOrder.inviteStatus}`
+          : syncedOrder.emailSentAt
+            ? '已查到支付成功，并已执行后续处理'
+            : '已查到支付成功，后续处理中'
+      )
+    } else if (['created', 'pending_payment'].includes(syncedOrder.status)) {
+      showInfoToast('暂未查到支付成功，订单仍是待支付')
+    } else if (syncedOrder.status === 'expired') {
+      showWarningToast('订单已过期')
+    } else if (syncedOrder.status === 'failed') {
+      showWarningToast('订单状态异常，请检查支付通道日志')
+    } else if (syncedOrder.status === 'refunded') {
+      showInfoToast('订单已退款')
+    } else {
+      showInfoToast(`当前订单状态：${statusLabel(syncedOrder.status)}`)
+    }
+
+    await loadOrders()
+  } catch (err: any) {
+    const message = err?.response?.data?.error || err?.message || '查单失败'
+    showErrorToast(message)
+  } finally {
+    syncingOrderNo.value = null
   }
 }
 
@@ -375,18 +416,31 @@ onUnmounted(() => {
                    <td class="px-6 py-5 text-sm text-gray-500 whitespace-nowrap">{{ formatDate(item.createdAt) }}</td>
                    <td class="px-6 py-5 text-sm text-gray-500 whitespace-nowrap">{{ formatDate(item.paidAt || null) }}</td>
                    <td class="px-6 py-5 text-right">
-                      <Button
-                         v-if="item.status === 'paid'"
-                         variant="outline"
-                         size="sm"
-                         class="h-8 text-xs border-gray-200 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors"
-                         :disabled="refundingOrderNo === item.orderNo"
-                         @click="handleRefund(item.orderNo)"
-                      >
-                         <RotateCcw class="h-3 w-3 mr-1.5" :class="refundingOrderNo === item.orderNo ? 'animate-spin' : ''" />
-          退款
-                      </Button>
-                      <span v-else class="text-gray-300 text-xs">-</span>
+                      <div class="flex items-center justify-end gap-2">
+                        <Button
+                           v-if="canSync(item)"
+                           variant="outline"
+                           size="sm"
+                           class="h-8 text-xs border-gray-200 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                           :disabled="syncingOrderNo === item.orderNo || refundingOrderNo === item.orderNo"
+                           @click="handleSync(item)"
+                        >
+                           <RefreshCw class="h-3 w-3 mr-1.5" :class="syncingOrderNo === item.orderNo ? 'animate-spin' : ''" />
+                           查单
+                        </Button>
+                        <Button
+                           v-if="item.status === 'paid'"
+                           variant="outline"
+                           size="sm"
+                           class="h-8 text-xs border-gray-200 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors"
+                           :disabled="refundingOrderNo === item.orderNo || syncingOrderNo === item.orderNo"
+                           @click="handleRefund(item.orderNo)"
+                        >
+                           <RotateCcw class="h-3 w-3 mr-1.5" :class="refundingOrderNo === item.orderNo ? 'animate-spin' : ''" />
+                           退款
+                        </Button>
+                        <span v-if="!canSync(item) && item.status !== 'paid'" class="text-gray-300 text-xs">-</span>
+                      </div>
                    </td>
                 </tr>
              </tbody>
